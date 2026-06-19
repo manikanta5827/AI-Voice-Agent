@@ -66,6 +66,7 @@ export class SarvamSTT {
       sample_rate: "8000",
       input_audio_codec: "wav",
       vad_signals: "true",
+      with_timestamps: "false",
     });
 
     return new Promise((resolve, reject) => {

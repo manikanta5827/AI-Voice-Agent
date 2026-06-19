@@ -38,10 +38,11 @@ export class SarvamTTS {
             type: "config",
             data: {
               target_language_code: "te-IN",
-              speaker: "ratan",
+              speaker: "kavitha",
               speech_sample_rate: 8000,
               output_audio_codec: "mulaw", // request MULAW directly, no encode step needed
-              pace: 1.0,
+              pace: 0.9,
+              loudness: 1.2,
               model: "bulbul:v3",
               send_completion_event: true,
             },
