@@ -1,4 +1,4 @@
-// Initialize G.711 Mu-law decode table
+// G.711 Mu-law decode table (Twilio audio → PCM S16LE for Sarvam STT)
 const MU_LAW_DECODE_TABLE = new Int16Array(256);
 for (let i = 0; i < 256; i++) {
   const mu = ~i;
@@ -10,99 +10,104 @@ for (let i = 0; i < 256; i++) {
   MU_LAW_DECODE_TABLE[i] = sign ? -sample : sample;
 }
 
-/**
- * Decodes a Mu-law buffer (8kHz) to a 16-bit PCM little-endian buffer.
- */
-function decodeMuLawToPCM(muLawBuffer: Buffer): Buffer {
-  const pcmBuffer = Buffer.alloc(muLawBuffer.length * 2);
-  for (let i = 0; i < muLawBuffer.length; i++) {
-    const muByte = muLawBuffer[i]!;
-    const pcmSample = MU_LAW_DECODE_TABLE[muByte]!;
-    pcmBuffer.writeInt16LE(pcmSample, i * 2);
+function decodeMuLawToPCM(mulawBuffer: Buffer): Buffer {
+  const pcm = Buffer.alloc(mulawBuffer.length * 2);
+  for (let i = 0; i < mulawBuffer.length; i++) {
+    pcm.writeInt16LE(MU_LAW_DECODE_TABLE[mulawBuffer[i]!]!, i * 2);
   }
-  return pcmBuffer;
+  return pcm;
 }
 
 /**
- * Prepends a 44-byte WAV header to 16-bit PCM mono audio.
+ * Persistent WebSocket connection to Sarvam STT.
+ * Streams decoded PCM chunks in, fires onFinalTranscript when VAD detects end-of-speech.
  */
-function pcmToWav(pcmBuffer: Buffer, sampleRate: number = 8000): Buffer {
-  const header = Buffer.alloc(44);
-  const dataLength = pcmBuffer.length;
+export class SarvamSTT {
+  private ws: WebSocket | null = null;
+  private currentTranscript = "";
+  private readonly apiKey: string;
 
-  // "RIFF" chunk descriptor
-  header.write("RIFF", 0);
-  header.writeUInt32LE(36 + dataLength, 4);
-  header.write("WAVE", 8);
+  onFinalTranscript: ((text: string) => void) | null = null;
+  onError: ((err: Error) => void) | null = null;
 
-  // "fmt " sub-chunk
-  header.write("fmt ", 12);
-  header.writeUInt32LE(16, 16); // Subchunk1Size (16 for PCM)
-  header.writeUInt16LE(1, 20);  // AudioFormat (1 = PCM)
-  header.writeUInt16LE(1, 22);  // NumChannels (1 = Mono)
-  header.writeUInt32LE(sampleRate, 24); // SampleRate (8000)
-  header.writeUInt32LE(sampleRate * 2, 28); // ByteRate (SampleRate * NumChannels * BitsPerSample/8 = 16000)
-  header.writeUInt16LE(2, 32);  // BlockAlign (NumChannels * BitsPerSample/8 = 2)
-  header.writeUInt16LE(16, 34); // BitsPerSample (16)
-
-  // "data" sub-chunk
-  header.write("data", 36);
-  header.writeUInt32LE(dataLength, 40);
-
-  return Buffer.concat([header, pcmBuffer]);
-}
-
-/**
- * Sends a raw Mu-law audio buffer to Sarvam STT after converting it to WAV.
- * @param mulawBuffer Raw 8kHz Mu-law audio buffer from Twilio
- * @returns The transcribed text
- */
-export async function transcribeAudio(mulawBuffer: Buffer): Promise<string> {
-  console.log(`🎙️ STT: Received ${mulawBuffer.length} bytes of Mu-law audio. Transcribing...`);
-
-  const apiKey = Bun.env.SARVAM_API_KEY;
-  if (!apiKey) {
-    console.error("❌ STT Error: SARVAM_API_KEY is not defined in the environment.");
-    throw new Error("SARVAM_API_KEY is missing");
+  constructor() {
+    this.apiKey = Bun.env.SARVAM_API_KEY || "";
+    if (!this.apiKey) console.warn("⚠️ SARVAM_API_KEY not set");
   }
 
-  try {
-    // 1. Convert Twilio 8kHz Mu-law to 16-bit linear PCM
-    const pcmBuffer = decodeMuLawToPCM(mulawBuffer);
-
-    // 2. Prepend WAV header (required by Sarvam API)
-    const wavBuffer = pcmToWav(pcmBuffer, 8000);
-
-    // 3. Prepare FormData
-    const formData = new FormData();
-    const wavBlob = new Blob([wavBuffer], { type: "audio/wav" });
-    
-    formData.append("file", wavBlob, "audio.wav");
-    formData.append("model", "saaras:v3");
-    formData.append("language_code", "te-IN");
-    formData.append("mode", "transcribe");
-
-    // 4. Send request to Sarvam STT REST API
-    const response = await fetch("https://api.sarvam.ai/speech-to-text", {
-      method: "POST",
-      headers: {
-        "api-subscription-key": apiKey,
-      },
-      body: formData,
+  async connect(): Promise<void> {
+    const params = new URLSearchParams({
+      "language-code": "te-IN",
+      model: "saaras:v3",
+      mode: "transcribe",
+      sample_rate: "8000",
+      input_audio_codec: "pcm_s16le",
+      vad_signals: "true",
     });
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`Sarvam STT returned status ${response.status}: ${errorText}`);
-    }
+    return new Promise((resolve, reject) => {
+      // Bun-specific: headers supported in WebSocket constructor
+      this.ws = new WebSocket(`wss://api.sarvam.ai/speech-to-text/ws?${params}`, {
+        headers: { "Api-Subscription-Key": this.apiKey },
+      } as any);
 
-    const data = (await response.json()) as { transcript?: string };
-    const transcript = data.transcript?.trim() || "";
+      this.ws.onopen = () => {
+        console.log("🎙️ STT: WebSocket connected");
+        resolve();
+      };
 
-    console.log(`🎙️ STT: Transcription result: "${transcript}"`);
-    return transcript;
-  } catch (error) {
-    console.error("❌ STT Error: Failed to transcribe audio", error);
-    throw error;
+      this.ws.onmessage = (event: MessageEvent) => {
+        try {
+          const msg = JSON.parse(event.data as string) as {
+            type: string;
+            data?: { transcript?: string; signal_type?: string };
+          };
+
+          if (msg.type === "data" && msg.data?.transcript) {
+            this.currentTranscript = msg.data.transcript.trim();
+          } else if (msg.type === "events") {
+            if (msg.data?.signal_type === "START_SPEECH") {
+              this.currentTranscript = "";
+              console.log("🎙️ STT: Speech start");
+            } else if (msg.data?.signal_type === "END_SPEECH") {
+              const text = this.currentTranscript;
+              this.currentTranscript = "";
+              console.log(`🎙️ STT: End of speech — "${text}"`);
+              if (text) this.onFinalTranscript?.(text);
+            }
+          }
+        } catch (e) {
+          console.error("❌ STT: Message parse error", e);
+        }
+      };
+
+      this.ws.onerror = (e: Event) => {
+        const err = new Error(`STT WebSocket error: ${e}`);
+        console.error("❌ STT: WebSocket error", e);
+        this.onError?.(err);
+        reject(err);
+      };
+
+      this.ws.onclose = () => {
+        console.log("🎙️ STT: WebSocket closed");
+        this.ws = null;
+      };
+    });
+  }
+
+  // Accepts raw Twilio MULAW buffer, decodes to PCM S16LE, sends to Sarvam STT
+  sendChunk(mulawBuffer: Buffer): void {
+    if (this.ws?.readyState !== WebSocket.OPEN) return;
+    const pcm = decodeMuLawToPCM(mulawBuffer);
+    this.ws.send(
+      JSON.stringify({
+        audio: { data: pcm.toString("base64"), sample_rate: "8000", encoding: "audio/wav" },
+      })
+    );
+  }
+
+  disconnect(): void {
+    this.ws?.close();
+    this.ws = null;
   }
 }

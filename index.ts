@@ -2,9 +2,9 @@ import Fastify from "fastify";
 import formbody from "@fastify/formbody";
 import websocket from "@fastify/websocket";
 import twilio from "twilio";
-import { transcribeAudio } from "./stt.ts";
+import { SarvamSTT } from "./stt.ts";
+import { SarvamTTS } from "./tts.ts";
 import { getLLMResponseStream } from "./llm.ts";
-import { textToSpeech } from "./tts.ts";
 import type { ModelMessage } from "ai";
 
 const fastify = Fastify({ logger: true });
@@ -12,12 +12,9 @@ const fastify = Fastify({ logger: true });
 await fastify.register(formbody);
 await fastify.register(websocket);
 
-// Health check endpoint
-fastify.get("/", async () => {
-  return { status: "running" };
-});
+fastify.get("/", async () => ({ status: "running" }));
 
-// Trigger an outbound call using Twilio REST API
+// Trigger an outbound call
 fastify.get("/make-call", async (req, reply) => {
   console.log("📞 Outbound Call Request received");
 
@@ -28,7 +25,6 @@ fastify.get("/make-call", async (req, reply) => {
   const publicUrl = Bun.env.PUBLIC_URL;
 
   if (!accountSid || !authToken || !fromNumber || !toNumber || !publicUrl) {
-    console.error("❌ Configuration Error: Missing required Twilio or URL environment variables.");
     reply.status(500);
     return { error: "Missing Twilio credentials or numbers in configuration" };
   }
@@ -40,23 +36,20 @@ fastify.get("/make-call", async (req, reply) => {
       to: toNumber,
       from: fromNumber,
     });
-
     console.log(`📞 Outbound call successfully initiated. SID: ${call.sid}`);
     return { status: "calling", sid: call.sid };
   } catch (error) {
-    console.error("❌ Twilio REST API Error: Failed to create call", error);
     reply.status(500);
     return { error: "Failed to initiate outbound call", details: error instanceof Error ? error.message : String(error) };
   }
 });
 
-// Twilio webhook for incoming calls
+// Twilio webhook — returns TwiML to stream audio
 fastify.post("/incoming-call", async (req, reply) => {
   console.log("📞 Incoming call webhook triggered from Twilio");
 
   const publicUrl = Bun.env.PUBLIC_URL;
   if (!publicUrl) {
-    console.error("❌ Configuration Error: PUBLIC_URL environment variable is missing.");
     reply.status(500);
     return "PUBLIC_URL is not set";
   }
@@ -78,27 +71,22 @@ fastify.register(async (fastifyInstance) => {
 
     let streamSid = "";
     let callSid = "";
-    let audioBuffer: Buffer[] = [];
-    let audioBufferSize = 0;
     let isProcessing = false;
-    let isSpeaking = false;           // true only while audio chunks are being sent to Twilio
+    let isSpeaking = false;
     let currentAbort: AbortController | null = null;
-    let silenceTimeout: Timer | null = null;
     let inactivityTimeout: Timer | null = null;
+    let audioStartTime: number | null = null;
     const conversationHistory: ModelMessage[] = [];
 
-    // 30s of total silence (user not speaking at all) → hang up
-    const INACTIVITY_MS = 30_000;
+    const stt = new SarvamSTT();
+    const tts = new SarvamTTS();
 
-    const clearAllTimers = () => {
-      if (silenceTimeout) { clearTimeout(silenceTimeout); silenceTimeout = null; }
-      if (inactivityTimeout) { clearTimeout(inactivityTimeout); inactivityTimeout = null; }
-    };
+    const INACTIVITY_MS = 30_000;
 
     const resetInactivityTimer = () => {
       if (inactivityTimeout) clearTimeout(inactivityTimeout);
       inactivityTimeout = setTimeout(async () => {
-        if (isProcessing) return; // agent busy — don't cut mid-response
+        if (isProcessing) return;
         console.log("📵 30s inactivity — ending call");
         try {
           const client = twilio(Bun.env.TWILIO_ACCOUNT_SID!, Bun.env.TWILIO_AUTH_TOKEN!);
@@ -110,7 +98,13 @@ fastify.register(async (fastifyInstance) => {
       }, INACTIVITY_MS);
     };
 
-    // Splits on Telugu/English sentence boundaries; returns complete sentences + leftover.
+    const cleanup = () => {
+      if (inactivityTimeout) { clearTimeout(inactivityTimeout); inactivityTimeout = null; }
+      stt.disconnect();
+      tts.disconnect();
+    };
+
+    // Split text on Telugu/English sentence boundaries
     const extractSentences = (text: string): { sentences: string[]; remainder: string } => {
       const re = /[.!?।]+\s*/g;
       const sentences: string[] = [];
@@ -124,105 +118,110 @@ fastify.register(async (fastifyInstance) => {
       return { sentences, remainder: text.slice(lastIndex) };
     };
 
-    const processAudioBuffer = async () => {
-      if (isProcessing || audioBufferSize === 0) return;
+    const resetPipelineState = () => {
+      isSpeaking = false;
+      isProcessing = false;
+      currentAbort = null;
+      audioStartTime = null;
+      tts.onAudioChunk = null;
+      tts.onComplete = null;
+    };
+
+    const runPipeline = async (transcript: string) => {
       isProcessing = true;
-
-      if (silenceTimeout) { clearTimeout(silenceTimeout); silenceTimeout = null; }
-
-      const inputAudio = Buffer.concat(audioBuffer);
-      audioBuffer = [];
-      audioBufferSize = 0;
-
       const abort = new AbortController();
       currentAbort = abort;
+      tts.resetByteCount();
+
+      // Wire TTS audio chunks → Twilio (fires for every synthesized chunk)
+      tts.onAudioChunk = (mulawBuffer: Buffer) => {
+        if (abort.signal.aborted || !streamSid) return;
+        if (!audioStartTime) audioStartTime = Date.now();
+        socket.send(JSON.stringify({
+          event: "media",
+          streamSid,
+          media: { payload: mulawBuffer.toString("base64") },
+        }));
+        isSpeaking = true;
+      };
+
+      // TTS synthesis complete → wait for playback to finish, then release
+      tts.onComplete = () => {
+        if (abort.signal.aborted) { resetPipelineState(); resetInactivityTimer(); return; }
+        const totalMs = (tts.totalMulawBytes / 8000) * 1000;
+        const elapsed = audioStartTime ? Date.now() - audioStartTime : 0;
+        const remainingMs = Math.max(totalMs - elapsed, 0);
+        console.log(`🔊 TTS: Playback remaining ~${remainingMs.toFixed(0)}ms`);
+        setTimeout(() => {
+          resetPipelineState();
+          resetInactivityTimer();
+          console.log("🎙️ Ready for next user input");
+        }, remainingMs + 500);
+      };
 
       try {
-        // 1. STT — must wait for full audio clip
-        const transcript = await transcribeAudio(inputAudio);
-        if (!transcript.trim()) {
-          console.log("🎙️ STT: Empty transcript, ignoring.");
-          isProcessing = false;
-          currentAbort = null;
-          resetInactivityTimer();
-          return;
-        }
-
-        // Push user message to history
         conversationHistory.push({ role: "user", content: transcript });
 
-        // 2. Stream LLM → fire TTS per sentence as text arrives (parallel TTS calls)
+        // Stream LLM → extract sentences → send each to TTS WebSocket as it arrives
         let textBuffer = "";
-        const audioPromises: Promise<string>[] = [];
-        let fullLLMResponse = "";
-
+        let fullResponse = "";
         const result = await getLLMResponseStream(conversationHistory);
 
         for await (const chunk of result.textStream) {
           if (abort.signal.aborted) break;
           textBuffer += chunk;
-          fullLLMResponse += chunk;
+          fullResponse += chunk;
           const { sentences, remainder } = extractSentences(textBuffer);
           textBuffer = remainder;
-          for (const sentence of sentences) {
-            // ponytail: TTS calls start immediately as sentences arrive — parallel, not serial
-            audioPromises.push(textToSpeech(sentence));
-          }
+          for (const s of sentences) tts.sendText(s);
         }
 
         if (!abort.signal.aborted && textBuffer.trim()) {
-          const finalSentence = textBuffer.trim();
-          fullLLMResponse += finalSentence;
-          audioPromises.push(textToSpeech(finalSentence));
-        }
-
-        // Append assistant response to history
-        if (fullLLMResponse.trim()) {
-          conversationHistory.push({ role: "assistant", content: fullLLMResponse });
-        }
-
-        // 3. Drain TTS results in order → send each sentence's audio to Twilio as it's ready
-        let totalPlaybackMs = 0;
-        for (const audioPromise of audioPromises) {
-          if (abort.signal.aborted) break;
-          const base64Mulaw = await audioPromise;
-          if (abort.signal.aborted || !streamSid) break;
-          socket.send(JSON.stringify({ event: "media", streamSid, media: { payload: base64Mulaw } }));
-          isSpeaking = true;
-          totalPlaybackMs += (Buffer.from(base64Mulaw, "base64").length / 8000) * 1000;
+          tts.sendText(textBuffer.trim());
+          fullResponse += textBuffer.trim();
         }
 
         if (abort.signal.aborted) {
-          // Barge-in already cleared Twilio buffer; just reset state
-          isSpeaking = false;
-          isProcessing = false;
-          currentAbort = null;
+          resetPipelineState();
+          resetInactivityTimer();
           return;
         }
 
-        if (streamSid && totalPlaybackMs > 0) {
-          console.log(`🔊 TTS: Total playback estimated: ${totalPlaybackMs.toFixed(0)}ms`);
-          setTimeout(() => {
-            isSpeaking = false;
-            isProcessing = false;
-            currentAbort = null;
-            resetInactivityTimer();
-            console.log("🎙️ Ready for next user input");
-          }, totalPlaybackMs + 500);
-        } else {
-          isSpeaking = false;
-          isProcessing = false;
-          currentAbort = null;
-          resetInactivityTimer();
+        // All LLM text sent — flush TTS to trigger final synthesis + completion event
+        tts.flush();
+
+        if (fullResponse.trim()) {
+          conversationHistory.push({ role: "assistant", content: fullResponse });
         }
-      } catch (error) {
-        console.error("❌ Pipeline Error:", error);
-        isSpeaking = false;
-        isProcessing = false;
-        currentAbort = null;
+        // onComplete handler above will reset state after playback
+      } catch (err) {
+        console.error("❌ Pipeline Error:", err);
+        resetPipelineState();
         resetInactivityTimer();
       }
     };
+
+    // STT fires this when Sarvam VAD detects end-of-utterance
+    stt.onFinalTranscript = (transcript: string) => {
+      resetInactivityTimer();
+
+      if (isProcessing) {
+        if (isSpeaking) {
+          // Barge-in: user started speaking while agent is playing audio
+          console.log("🛑 Barge-in (STT) — stopping agent audio");
+          currentAbort?.abort();
+          socket.send(JSON.stringify({ event: "clear", streamSid }));
+          resetPipelineState();
+          // Fall through to process new transcript
+        } else {
+          return; // Agent still in LLM phase — ignore
+        }
+      }
+
+      runPipeline(transcript);
+    };
+
+    stt.onError = (err: Error) => console.error("❌ STT error:", err);
 
     socket.on("message", (rawMsg: any) => {
       try {
@@ -237,39 +236,31 @@ fastify.register(async (fastifyInstance) => {
             streamSid = msg.start?.streamSid || "";
             callSid = msg.start?.callSid || "";
             console.log("▶️ Stream started, Stream SID:", streamSid);
-            resetInactivityTimer();
+            // Connect STT + TTS WebSockets when call begins
+            Promise.all([stt.connect(), tts.connect()]).then(() => {
+              console.log("✅ STT + TTS WebSockets ready");
+              resetInactivityTimer();
+            }).catch((e) => console.error("❌ Failed to connect STT/TTS WebSockets:", e));
             break;
 
           case "media":
-            if (isProcessing) {
-              if (isSpeaking) {
-                // Barge-in: user spoke while agent audio was playing → stop agent, listen to user
-                console.log("🛑 Barge-in — clearing agent audio, switching to user");
-                currentAbort?.abort();
-                socket.send(JSON.stringify({ event: "clear", streamSid }));
-                isSpeaking = false;
-                isProcessing = false;
-                currentAbort = null;
-                // fall through — collect this chunk as start of user's new utterance
-              } else {
-                // Still in STT/LLM phase (not speaking yet) — discard
-                return;
-              }
+            // Always forward audio to STT WebSocket (Sarvam VAD handles speech detection)
+            if (isProcessing && isSpeaking) {
+              // Twilio-level barge-in detection (backup to STT-level barge-in)
+              console.log("🛑 Barge-in (Twilio) — stopping agent audio");
+              currentAbort?.abort();
+              socket.send(JSON.stringify({ event: "clear", streamSid }));
+              resetPipelineState();
             }
 
             resetInactivityTimer();
             const chunk = Buffer.from(msg.media.payload, "base64");
-            audioBuffer.push(chunk);
-            audioBufferSize += chunk.length;
-
-            // Reset VAD silence timer — process only after 1.5s of silence (end of utterance)
-            if (silenceTimeout) { clearTimeout(silenceTimeout); silenceTimeout = null; }
-            silenceTimeout = setTimeout(processAudioBuffer, 1500);
+            stt.sendChunk(chunk); // Stream directly to Sarvam STT — no local buffering
             break;
 
           case "stop":
             console.log("⏹️ Call ended / Stream stopped");
-            clearAllTimers();
+            cleanup();
             break;
         }
       } catch (err) {
@@ -279,12 +270,12 @@ fastify.register(async (fastifyInstance) => {
 
     socket.on("close", () => {
       console.log("🔌 WebSocket closed");
-      clearAllTimers();
+      cleanup();
     });
 
     socket.on("error", (err: Error) => {
       console.error("❌ WebSocket error:", err);
-      clearAllTimers();
+      cleanup();
     });
   });
 });
