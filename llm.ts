@@ -41,7 +41,7 @@ export async function getLLMResponseStream(messages: ModelMessage[]) {
 
   try {
     const result = streamText({
-      model: gateway("openai/gpt-oss-120b"), // Best balance of Telugu accuracy, 0.2s latency, and 296 TPS
+      model: gateway("google/gemini-3.5-flash"), // ponytail: best Telugu corpus + fastest TTFT for Indic languages
       system: SYSTEM_PROMPT,
       messages: messages,
     });

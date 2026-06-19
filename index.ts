@@ -205,6 +205,7 @@ fastify.register(async (fastifyInstance) => {
         tts.flush();
 
         if (fullResponse.trim()) {
+          console.log(`🤖 Agent: "${fullResponse.trim()}"`);
           conversationHistory.push({ role: "assistant", content: fullResponse });
         }
         // onComplete handler above will reset state after playback
@@ -232,6 +233,7 @@ fastify.register(async (fastifyInstance) => {
         }
       }
 
+      console.log(`👤 User: "${transcript}"`);
       runPipeline(transcript);
     };
 
