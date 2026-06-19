@@ -118,6 +118,16 @@ fastify.register(async (fastifyInstance) => {
       return { sentences, remainder: text.slice(lastIndex) };
     };
 
+    // Clean SSML break tags and bracketed metadata before sending to TTS
+    const cleanTextForTTS = (text: string): string => {
+      return text
+        .replace(/<break[^>]*\/>/gi, "...")
+        .replace(/<[^>]*>/gi, "")
+        .replace(/\[INTENT:[^\]]*\]/gi, "")
+        .replace(/\[[^\]]*\]/gi, "")
+        .trim();
+    };
+
     const resetPipelineState = () => {
       isSpeaking = false;
       isProcessing = false;
@@ -173,11 +183,15 @@ fastify.register(async (fastifyInstance) => {
           fullResponse += chunk;
           const { sentences, remainder } = extractSentences(textBuffer);
           textBuffer = remainder;
-          for (const s of sentences) tts.sendText(s);
+          for (const s of sentences) {
+            const cleaned = cleanTextForTTS(s);
+            if (cleaned) tts.sendText(cleaned);
+          }
         }
 
         if (!abort.signal.aborted && textBuffer.trim()) {
-          tts.sendText(textBuffer.trim());
+          const cleaned = cleanTextForTTS(textBuffer.trim());
+          if (cleaned) tts.sendText(cleaned);
           fullResponse += textBuffer.trim();
         }
 
@@ -247,15 +261,6 @@ fastify.register(async (fastifyInstance) => {
             break;
 
           case "media":
-            // Always forward audio to STT WebSocket (Sarvam VAD handles speech detection)
-            if (isProcessing && isSpeaking) {
-              // Twilio-level barge-in detection (backup to STT-level barge-in)
-              console.log("🛑 Barge-in (Twilio) — stopping agent audio");
-              currentAbort?.abort();
-              socket.send(JSON.stringify({ event: "clear", streamSid }));
-              resetPipelineState();
-            }
-
             resetInactivityTimer();
             const chunk = Buffer.from(msg.media.payload, "base64");
             stt.sendChunk(chunk); // Stream directly to Sarvam STT — no local buffering

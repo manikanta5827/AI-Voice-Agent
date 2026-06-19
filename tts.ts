@@ -53,6 +53,7 @@ export class SarvamTTS {
 
       this.ws.onmessage = (event: MessageEvent) => {
         try {
+          // console.log("🔊 TTS raw message:", event.data);
           const msg = JSON.parse(event.data as string) as {
             type: string;
             data?: { audio?: string; event_type?: string };
@@ -77,8 +78,8 @@ export class SarvamTTS {
         reject(new Error(`TTS WebSocket error: ${e}`));
       };
 
-      this.ws.onclose = () => {
-        console.log("🔊 TTS: WebSocket closed");
+      this.ws.onclose = (event: CloseEvent) => {
+        console.log(`🔊 TTS: WebSocket closed — code: ${event.code}, reason: "${event.reason}"`);
         this.ws = null;
       };
     });

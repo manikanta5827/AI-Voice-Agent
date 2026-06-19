@@ -19,12 +19,11 @@ function decodeMuLawToPCM(mulawBuffer: Buffer): Buffer {
 }
 
 // Wrap raw PCM S16LE in a minimal WAV container (44-byte header).
-// Sarvam STT requires encoding:"audio/wav" and validates the WAV header.
+// For streaming, we use 0xFFFFFFFF for the sizes so the decoder reads until EOF.
 function pcmToWav(pcm: Buffer, sampleRate = 8000, channels = 1, bitsPerSample = 16): Buffer {
-  const dataSize = pcm.length;
   const header = Buffer.alloc(44);
   header.write("RIFF", 0);
-  header.writeUInt32LE(36 + dataSize, 4);
+  header.writeUInt32LE(0xFFFFFFFF, 4);   // dummy size for streaming
   header.write("WAVE", 8);
   header.write("fmt ", 12);
   header.writeUInt32LE(16, 16);          // PCM chunk size
@@ -35,7 +34,7 @@ function pcmToWav(pcm: Buffer, sampleRate = 8000, channels = 1, bitsPerSample = 
   header.writeUInt16LE(channels * (bitsPerSample / 8), 32);              // block align
   header.writeUInt16LE(bitsPerSample, 34);
   header.write("data", 36);
-  header.writeUInt32LE(dataSize, 40);
+  header.writeUInt32LE(0xFFFFFFFF, 40);  // dummy size for streaming
   return Buffer.concat([header, pcm]);
 }
 
@@ -46,6 +45,7 @@ function pcmToWav(pcm: Buffer, sampleRate = 8000, channels = 1, bitsPerSample = 
 export class SarvamSTT {
   private ws: WebSocket | null = null;
   private currentTranscript = "";
+  private isSpeechEnded = false;
   private readonly apiKey: string;
   private stopped = false;
   private connecting = false; // gate: prevents flood of connect() from sendChunk while ws=null
@@ -64,7 +64,7 @@ export class SarvamSTT {
       model: "saaras:v3",
       mode: "transcribe",
       sample_rate: "8000",
-      input_audio_codec: "pcm_s16le",
+      input_audio_codec: "wav",
       vad_signals: "true",
     });
 
@@ -75,6 +75,7 @@ export class SarvamSTT {
 
       this.ws.onopen = () => {
         this.connecting = false;
+        this.hasSentHeader = false;
         console.log("🎙️ STT: WebSocket connected");
         resolve();
       };
@@ -88,16 +89,36 @@ export class SarvamSTT {
           };
 
           if (msg.type === "data" && msg.data?.transcript) {
-            this.currentTranscript = msg.data.transcript.trim();
+            const transcript = msg.data.transcript.trim();
+            if (this.isSpeechEnded) {
+              // END_SPEECH was already received, so this is the final transcript
+              this.isSpeechEnded = false;
+              this.currentTranscript = "";
+              console.log(`🎙️ STT: Final transcript received after END_SPEECH — "${transcript}"`);
+              if (transcript) this.onFinalTranscript?.(transcript);
+            } else {
+              // Intermediate transcript
+              this.currentTranscript = transcript;
+            }
           } else if (msg.type === "events") {
             if (msg.data?.signal_type === "START_SPEECH") {
               this.currentTranscript = "";
+              this.isSpeechEnded = false;
               console.log("🎙️ STT: Speech start");
             } else if (msg.data?.signal_type === "END_SPEECH") {
-              const text = this.currentTranscript;
-              this.currentTranscript = "";
-              console.log(`🎙️ STT: End of speech — "${text}"`);
-              if (text) this.onFinalTranscript?.(text);
+              console.log(`🎙️ STT: END_SPEECH event received. Current buffer: "${this.currentTranscript}"`);
+              if (this.currentTranscript) {
+                // Transcript arrived before END_SPEECH, finalize now
+                const text = this.currentTranscript;
+                this.currentTranscript = "";
+                this.isSpeechEnded = false;
+                console.log(`🎙️ STT: Finalizing with existing transcript — "${text}"`);
+                this.onFinalTranscript?.(text);
+              } else {
+                // Transcript has not arrived yet, wait for the data message
+                this.isSpeechEnded = true;
+                console.log(`🎙️ STT: Waiting for final transcript message...`);
+              }
             }
           }
         } catch (e) {
@@ -144,12 +165,20 @@ export class SarvamSTT {
     this._send(mulawBuffer);
   }
 
+  private hasSentHeader = false;
+
   private _send(mulawBuffer: Buffer): void {
     const pcm = decodeMuLawToPCM(mulawBuffer);
-    const wav = pcmToWav(pcm);
+    
+    let chunkToSend = pcm;
+    if (!this.hasSentHeader) {
+      chunkToSend = pcmToWav(pcm);
+      this.hasSentHeader = true;
+    }
+
     this.ws!.send(JSON.stringify({
       audio: {
-        data: wav.toString("base64"),
+        data: chunkToSend.toString("base64"),
         encoding: "audio/wav",
         sample_rate: "8000",
       },

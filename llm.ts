@@ -42,8 +42,7 @@ NEVER GENERATE:
 - More than 2 sentences
 
 OUTPUT FORMAT:
-[Your Telugu response here]
-[INTENT: PROMISE_TO_PAY | ALREADY_PAID | REFUSED | NEEDS_TIME | UNCLEAR]`;
+[Your Telugu response here]`;
 
 /**
  * Initiates a streaming LLM response routing through Vercel AI Gateway.
