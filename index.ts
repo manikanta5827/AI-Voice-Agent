@@ -236,11 +236,14 @@ fastify.register(async (fastifyInstance) => {
             streamSid = msg.start?.streamSid || "";
             callSid = msg.start?.callSid || "";
             console.log("▶️ Stream started, Stream SID:", streamSid);
-            // Connect STT + TTS WebSockets when call begins
-            Promise.all([stt.connect(), tts.connect()]).then(() => {
-              console.log("✅ STT + TTS WebSockets ready");
-              resetInactivityTimer();
-            }).catch((e) => console.error("❌ Failed to connect STT/TTS WebSockets:", e));
+            // Connect TTS eagerly (needs to be ready when LLM output arrives).
+            // STT connects lazily on first audio chunk — Sarvam drops idle STT connections.
+            tts.connect()
+              .then(() => {
+                console.log("✅ TTS WebSocket ready");
+                resetInactivityTimer();
+              })
+              .catch((e) => console.error("❌ Failed to connect TTS WebSocket:", e));
             break;
 
           case "media":

@@ -18,6 +18,27 @@ function decodeMuLawToPCM(mulawBuffer: Buffer): Buffer {
   return pcm;
 }
 
+// Wrap raw PCM S16LE in a minimal WAV container (44-byte header).
+// Sarvam STT requires encoding:"audio/wav" and validates the WAV header.
+function pcmToWav(pcm: Buffer, sampleRate = 8000, channels = 1, bitsPerSample = 16): Buffer {
+  const dataSize = pcm.length;
+  const header = Buffer.alloc(44);
+  header.write("RIFF", 0);
+  header.writeUInt32LE(36 + dataSize, 4);
+  header.write("WAVE", 8);
+  header.write("fmt ", 12);
+  header.writeUInt32LE(16, 16);          // PCM chunk size
+  header.writeUInt16LE(1, 20);           // PCM format
+  header.writeUInt16LE(channels, 22);
+  header.writeUInt32LE(sampleRate, 24);
+  header.writeUInt32LE(sampleRate * channels * (bitsPerSample / 8), 28); // byte rate
+  header.writeUInt16LE(channels * (bitsPerSample / 8), 32);              // block align
+  header.writeUInt16LE(bitsPerSample, 34);
+  header.write("data", 36);
+  header.writeUInt32LE(dataSize, 40);
+  return Buffer.concat([header, pcm]);
+}
+
 /**
  * Persistent WebSocket connection to Sarvam STT.
  * Streams decoded PCM chunks in, fires onFinalTranscript when VAD detects end-of-speech.
@@ -26,6 +47,8 @@ export class SarvamSTT {
   private ws: WebSocket | null = null;
   private currentTranscript = "";
   private readonly apiKey: string;
+  private stopped = false;
+  private connecting = false; // gate: prevents flood of connect() from sendChunk while ws=null
 
   onFinalTranscript: ((text: string) => void) | null = null;
   onError: ((err: Error) => void) | null = null;
@@ -46,18 +69,19 @@ export class SarvamSTT {
     });
 
     return new Promise((resolve, reject) => {
-      // Bun-specific: headers supported in WebSocket constructor
       this.ws = new WebSocket(`wss://api.sarvam.ai/speech-to-text/ws?${params}`, {
         headers: { "Api-Subscription-Key": this.apiKey },
       } as any);
 
       this.ws.onopen = () => {
+        this.connecting = false;
         console.log("🎙️ STT: WebSocket connected");
         resolve();
       };
 
       this.ws.onmessage = (event: MessageEvent) => {
         try {
+          console.log("🎙️ STT raw:", event.data); // temp: diagnose message structure
           const msg = JSON.parse(event.data as string) as {
             type: string;
             data?: { transcript?: string; signal_type?: string };
@@ -82,31 +106,58 @@ export class SarvamSTT {
       };
 
       this.ws.onerror = (e: Event) => {
+        this.connecting = false;
         const err = new Error(`STT WebSocket error: ${e}`);
         console.error("❌ STT: WebSocket error", e);
         this.onError?.(err);
         reject(err);
       };
 
-      this.ws.onclose = () => {
-        console.log("🎙️ STT: WebSocket closed");
+      this.ws.onclose = (event: CloseEvent) => {
+        this.connecting = false;
+        // Log close code so we can diagnose Sarvam rejection reason
+        console.log(`🎙️ STT: WebSocket closed — code: ${event.code}, reason: "${event.reason}"`);
         this.ws = null;
       };
     });
   }
 
-  // Accepts raw Twilio MULAW buffer, decodes to PCM S16LE, sends to Sarvam STT
+  // Accepts raw Twilio MULAW buffer, decodes to PCM S16LE, sends JSON to Sarvam STT.
+  // Lazy-connects on first chunk (Sarvam drops idle connections with no audio).
+  // `connecting` flag prevents re-entrant connect() flood from Twilio's 50 chunks/sec.
   sendChunk(mulawBuffer: Buffer): void {
-    if (this.ws?.readyState !== WebSocket.OPEN) return;
+    if (this.stopped || this.connecting) return;
+
+    if (!this.ws || this.ws.readyState === WebSocket.CLOSED || this.ws.readyState === WebSocket.CLOSING) {
+      this.connecting = true;
+      this.connect()
+        .then(() => {
+          if (this.ws?.readyState === WebSocket.OPEN) {
+            this._send(mulawBuffer);
+          }
+        })
+        .catch(e => this.onError?.(e));
+      return;
+    }
+
+    if (this.ws.readyState !== WebSocket.OPEN) return;
+    this._send(mulawBuffer);
+  }
+
+  private _send(mulawBuffer: Buffer): void {
     const pcm = decodeMuLawToPCM(mulawBuffer);
-    this.ws.send(
-      JSON.stringify({
-        audio: { data: pcm.toString("base64"), sample_rate: "8000", encoding: "audio/wav" },
-      })
-    );
+    const wav = pcmToWav(pcm);
+    this.ws!.send(JSON.stringify({
+      audio: {
+        data: wav.toString("base64"),
+        encoding: "audio/wav",
+        sample_rate: "8000",
+      },
+    }));
   }
 
   disconnect(): void {
+    this.stopped = true;
     this.ws?.close();
     this.ws = null;
   }
