@@ -1,73 +1,64 @@
 /**
- * Persistent WebSocket connection to Sarvam TTS.
+ * Persistent WebSocket connection to Cartesia Sonic TTS.
  * Accepts text sentences, fires onAudioChunk with MULAW bytes for Twilio.
  * Fires onComplete after synthesis of all queued text finishes.
+ * Each pipeline turn gets a fresh context_id so Cartesia tracks turn boundaries.
  */
-export class SarvamTTS {
+export class CartesiaTTS {
   private ws: WebSocket | null = null;
   private readonly apiKey: string;
+  private readonly voiceId: string;
+  private contextId = "";
   private _totalMulawBytes = 0;
 
   onAudioChunk: ((mulawBuffer: Buffer) => void) | null = null;
   onComplete: (() => void) | null = null;
 
   constructor() {
-    this.apiKey = Bun.env.SARVAM_API_KEY || "";
-    if (!this.apiKey) console.warn("⚠️ SARVAM_API_KEY not set");
+    this.apiKey = Bun.env.CARTESIA_API_KEY || "";
+    this.voiceId = Bun.env.CARTESIA_VOICE_ID || "";
+    if (!this.apiKey) console.warn("⚠️ CARTESIA_API_KEY not set");
+    if (!this.voiceId) console.warn("⚠️ CARTESIA_VOICE_ID not set");
   }
 
-  get totalMulawBytes(): number {
-    return this._totalMulawBytes;
-  }
+  get totalMulawBytes(): number { return this._totalMulawBytes; }
 
   resetByteCount(): void {
     this._totalMulawBytes = 0;
+    this.contextId = crypto.randomUUID(); // new context per pipeline turn
   }
 
   async connect(): Promise<void> {
     return new Promise((resolve, reject) => {
-      this.ws = new WebSocket(
-        "wss://api.sarvam.ai/text-to-speech/ws?model=bulbul:v3",
-        { headers: { "api-subscription-key": this.apiKey } } as any
-      );
+      this.ws = new WebSocket("wss://api.cartesia.ai/tts/websocket", {
+        headers: {
+          "X-API-Key": this.apiKey,
+          "Cartesia-Version": "2024-06-10",
+        },
+      } as any);
 
       this.ws.onopen = () => {
-        // Only send documented config fields — unknown fields cause server to reject + close
-        this.ws!.send(
-          JSON.stringify({
-            type: "config",
-            data: {
-              target_language_code: "te-IN",
-              speaker: "kavitha",
-              speech_sample_rate: 8000,
-              output_audio_codec: "mulaw", // request MULAW directly, no encode step needed
-              pace: 0.9,
-              loudness: 1.2,
-              model: "bulbul:v3",
-              send_completion_event: true,
-            },
-          })
-        );
-        console.log("🔊 TTS: WebSocket connected");
+        console.log("🔊 TTS: Cartesia WebSocket connected");
         resolve();
       };
 
       this.ws.onmessage = (event: MessageEvent) => {
         try {
-          // console.log("🔊 TTS raw message:", event.data);
           const msg = JSON.parse(event.data as string) as {
             type: string;
-            data?: { audio?: string; event_type?: string };
+            data?: string;
+            error?: string;
           };
 
-          if (msg.type === "audio" && msg.data?.audio) {
-            // Sarvam returns MULAW directly — forward as-is, no encode step
-            const mulaw = Buffer.from(msg.data.audio, "base64");
+          if (msg.type === "chunk" && msg.data) {
+            const mulaw = Buffer.from(msg.data, "base64");
             this._totalMulawBytes += mulaw.length;
             this.onAudioChunk?.(mulaw);
-          } else if (msg.type === "event" && msg.data?.event_type === "final") {
+          } else if (msg.type === "done") {
             console.log(`🔊 TTS: Synthesis complete — ${this._totalMulawBytes} MULAW bytes`);
             this.onComplete?.();
+          } else if (msg.type === "error") {
+            console.error("❌ TTS: Cartesia error —", msg.error);
           }
         } catch (e) {
           console.error("❌ TTS: Message parse error", e);
@@ -86,15 +77,25 @@ export class SarvamTTS {
     });
   }
 
-  sendText(text: string): void {
-    if (this.ws?.readyState !== WebSocket.OPEN) return;
-    this.ws.send(JSON.stringify({ type: "text", data: { text } }));
+  private base() {
+    return {
+      model_id: "sonic-3.5",
+      voice: { mode: "id", id: this.voiceId },
+      output_format: { container: "raw", encoding: "pcm_mulaw", sample_rate: 8000 },
+      language: "te",
+      context_id: this.contextId,
+    };
   }
 
-  // Signal end of text stream so Sarvam flushes remaining buffer and fires final event
+  sendText(text: string): void {
+    if (this.ws?.readyState !== WebSocket.OPEN) return;
+    this.ws.send(JSON.stringify({ ...this.base(), transcript: text, continue: true }));
+  }
+
+  // Signal end of turn — Cartesia flushes remaining audio and fires "done"
   flush(): void {
     if (this.ws?.readyState !== WebSocket.OPEN) return;
-    this.ws.send(JSON.stringify({ type: "flush" }));
+    this.ws.send(JSON.stringify({ ...this.base(), transcript: "", continue: false }));
   }
 
   disconnect(): void {

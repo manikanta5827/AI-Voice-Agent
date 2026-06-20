@@ -3,9 +3,10 @@ import formbody from "@fastify/formbody";
 import websocket from "@fastify/websocket";
 import twilio from "twilio";
 import { SarvamSTT } from "./stt.ts";
-import { SarvamTTS } from "./tts.ts";
+import { CartesiaTTS } from "./tts.ts";
 import { getLLMResponseStream } from "./llm.ts";
 import type { ModelMessage } from "ai";
+import { initDB, insertCall, insertMessage, endCall } from "./db.ts";
 
 const fastify = Fastify({ logger: true });
 
@@ -57,7 +58,6 @@ fastify.post("/incoming-call", async (req, reply) => {
   reply.type("text/xml");
   return `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Say language="te-IN">నమస్కారం, నేను మీకు ఒక ముఖ్యమైన విషయం చెప్పాలనుకుంటున్నాను</Say>
   <Connect>
     <Stream url="wss://${publicUrl}/media-stream" />
   </Connect>
@@ -74,32 +74,59 @@ fastify.register(async (fastifyInstance) => {
     let isProcessing = false;
     let isSpeaking = false;
     let currentAbort: AbortController | null = null;
-    let inactivityTimeout: Timer | null = null;
+    let shouldEndAfterResponse = false;
+    let idleWarnTimeout: Timer | null = null;
+    let idleHangupTimeout: Timer | null = null;
+    let maxDurationTimer: Timer | null = null;
     let audioStartTime: number | null = null;
     const conversationHistory: ModelMessage[] = [];
 
     const stt = new SarvamSTT();
-    const tts = new SarvamTTS();
+    const tts = new CartesiaTTS();
 
-    const INACTIVITY_MS = 30_000;
+    // Play a TTS message outside the main pipeline (idle warnings, max-duration, etc.)
+    const playIdleMessage = (text: string, onDone?: () => void) => {
+      tts.onAudioChunk = (buf: Buffer) => {
+        if (!streamSid) return;
+        socket.send(JSON.stringify({ event: "media", streamSid, media: { payload: buf.toString("base64") } }));
+      };
+      tts.onComplete = () => {
+        tts.onAudioChunk = null;
+        tts.onComplete = null;
+        onDone?.();
+      };
+      tts.sendText(text);
+      tts.flush();
+    };
 
     const resetInactivityTimer = () => {
-      if (inactivityTimeout) clearTimeout(inactivityTimeout);
-      inactivityTimeout = setTimeout(async () => {
+      if (idleWarnTimeout) { clearTimeout(idleWarnTimeout); idleWarnTimeout = null; }
+      if (idleHangupTimeout) { clearTimeout(idleHangupTimeout); idleHangupTimeout = null; }
+
+      idleWarnTimeout = setTimeout(() => {
         if (isProcessing) return;
-        console.log("📵 30s inactivity — ending call");
-        try {
-          const client = twilio(Bun.env.TWILIO_ACCOUNT_SID!, Bun.env.TWILIO_AUTH_TOKEN!);
-          await client.calls(callSid).update({ status: "completed" });
-        } catch (e) {
-          console.error("❌ Failed to end call via REST, closing WebSocket", e);
-          socket.close();
-        }
-      }, INACTIVITY_MS);
+        playIdleMessage("అక్కడ ఉన్నారా అండీ?", () => {
+          idleHangupTimeout = setTimeout(async () => {
+            if (isProcessing) return;
+            console.log("📵 20s total idle — ending call");
+            playIdleMessage("సరే అండీ, తర్వాత మాట్లాడదాం. Bye!");
+            await endCall(callSid).catch(() => {});
+            setTimeout(async () => {
+              try {
+                const client = twilio(Bun.env.TWILIO_ACCOUNT_SID!, Bun.env.TWILIO_AUTH_TOKEN!);
+                await client.calls(callSid).update({ status: "completed" });
+              } catch { socket.close(); }
+            }, 3000);
+          }, 10_000);
+        });
+      }, 10_000);
     };
 
     const cleanup = () => {
-      if (inactivityTimeout) { clearTimeout(inactivityTimeout); inactivityTimeout = null; }
+      if (idleWarnTimeout) { clearTimeout(idleWarnTimeout); idleWarnTimeout = null; }
+      if (idleHangupTimeout) { clearTimeout(idleHangupTimeout); idleHangupTimeout = null; }
+      if (maxDurationTimer) { clearTimeout(maxDurationTimer); maxDurationTimer = null; }
+      if (callSid) endCall(callSid).catch(() => {});
       stt.disconnect();
       tts.disconnect();
     };
@@ -162,15 +189,30 @@ fastify.register(async (fastifyInstance) => {
         const elapsed = audioStartTime ? Date.now() - audioStartTime : 0;
         const remainingMs = Math.max(totalMs - elapsed, 0);
         console.log(`🔊 TTS: Playback remaining ~${remainingMs.toFixed(0)}ms`);
-        setTimeout(() => {
+        setTimeout(async () => {
           resetPipelineState();
+          if (shouldEndAfterResponse) {
+            shouldEndAfterResponse = false;
+            console.log("👋 End-call signal — hanging up after farewell");
+            await endCall(callSid).catch(() => {});
+            try {
+              const client = twilio(Bun.env.TWILIO_ACCOUNT_SID!, Bun.env.TWILIO_AUTH_TOKEN!);
+              await client.calls(callSid).update({ status: "completed" });
+            } catch { socket.close(); }
+            return;
+          }
           resetInactivityTimer();
           console.log("🎙️ Ready for next user input");
         }, remainingMs + 500);
       };
 
+      // Send thinking filler immediately — covers LLM TTFT gap
+      const fillers = ["అవును...", "సరే...", "ఒక్క నిముషం అండీ..."];
+      tts.sendText(fillers[Math.floor(Math.random() * fillers.length)]);
+
       try {
         conversationHistory.push({ role: "user", content: transcript });
+        insertMessage(callSid, "user", transcript).catch(e => console.error("❌ DB:", e));
 
         // Stream LLM → extract sentences → send each to TTS WebSocket as it arrives
         let textBuffer = "";
@@ -206,6 +248,7 @@ fastify.register(async (fastifyInstance) => {
 
         if (fullResponse.trim()) {
           console.log(`🤖 Agent: "${fullResponse.trim()}"`);
+          insertMessage(callSid, "assistant", fullResponse.trim()).catch(e => console.error("❌ DB:", e));
           conversationHistory.push({ role: "assistant", content: fullResponse });
         }
         // onComplete handler above will reset state after playback
@@ -234,6 +277,8 @@ fastify.register(async (fastifyInstance) => {
       }
 
       console.log(`👤 User: "${transcript}"`);
+      const END_SIGNALS = ["bye", "goodbye", "ok bye", "thank you", "thanks", "థాంక్యూ", "అయిపోయింది", "చాలు అండీ"];
+      if (END_SIGNALS.some(s => transcript.toLowerCase().includes(s))) shouldEndAfterResponse = true;
       runPipeline(transcript);
     };
 
@@ -252,12 +297,26 @@ fastify.register(async (fastifyInstance) => {
             streamSid = msg.start?.streamSid || "";
             callSid = msg.start?.callSid || "";
             console.log("▶️ Stream started, Stream SID:", streamSid);
+            insertCall(callSid, streamSid).catch(e => console.error("❌ DB insertCall:", e));
+            maxDurationTimer = setTimeout(() => {
+              console.log("⏰ Max call duration (600s) — ending call");
+              playIdleMessage("సరే అండీ, call time అయిపోయింది. తర్వాత మాట్లాడదాం!", async () => {
+                await endCall(callSid).catch(() => {});
+                try {
+                  const client = twilio(Bun.env.TWILIO_ACCOUNT_SID!, Bun.env.TWILIO_AUTH_TOKEN!);
+                  await client.calls(callSid).update({ status: "completed" });
+                } catch { socket.close(); }
+              });
+            }, 600_000);
             // Connect TTS eagerly (needs to be ready when LLM output arrives).
             // STT connects lazily on first audio chunk — Sarvam drops idle STT connections.
             tts.connect()
               .then(() => {
                 console.log("✅ TTS WebSocket ready");
-                resetInactivityTimer();
+                playIdleMessage(
+                  "నమస్కారం అండీ... SecureLife Insurance కి స్వాగతం. మీకు ఏ విషయంలో సహాయం కావాలి?",
+                  () => resetInactivityTimer()
+                );
               })
               .catch((e) => console.error("❌ Failed to connect TTS WebSocket:", e));
             break;
@@ -290,6 +349,7 @@ fastify.register(async (fastifyInstance) => {
   });
 });
 
+await initDB();
 const PORT = Bun.env.PORT ? parseInt(Bun.env.PORT) : 8080;
 await fastify.listen({ port: PORT, host: "0.0.0.0" });
 console.log(`🚀 Server running on port ${PORT}`);

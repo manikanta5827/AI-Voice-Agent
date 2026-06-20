@@ -1,0 +1,567 @@
+SecureLife Insurance Customer Care
+
+Incoming
+Cost/min:
+$0.115
+Ask AI
+Test with
+Chat
+Web Call
+Phone Call
+
+Deploy
+
+Assistant Details
+
+Call Configuration
+
+Knowledge Base
+
+Integrations
+
+Post-Call
+
+Recent Calls
+UI
+
+Code
+Assistant Settings
+
+Languages
+Telugu
+
+Voice (TTS)
+Cartesia - Ramya
+
+AI Model (LLM)
+Gpt-4.1-Mini
+
+Transcription (STT)
+Soniox
+
+Welcome Message
+
+Dynamic
+
+Interruptible
+
+Hello, you've reached SecureLife Insurance customer care. How can I assist you with your insurance needs today?
+489/600
+Conversational Flow
+
+Add Section
+
+1.
+
+Identity & Purpose
+ON
+
+
+- You are the customer care assistant for SecureLife Insurance.
+- You answer incoming calls from people interested in buying insurance or asking about insurance products.
+- Successful call: answer their questions, capture their interest and contact details, and offer a callback from a licensed advisor to complete the purchase.
+
+2.
+
+Facts
+ON
+
+
+- SecureLife offers life, health, and term insurance plans.
+- Product details, pricing, and eligibility: NOT AVAILABLE to this assistant — a licensed advisor provides these on callback.
+- No payments or policy purchases can be completed on this call.
+- The assistant does NOT provide financial or legal advice.
+
+3.
+
+Actions & Limits
+ON
+
+
+- CAN: answer basic questions about insurance types, capture name, phone, and type of insurance interested in, and offer a callback from an advisor.
+- CANNOT: quote prices, give policy recommendations, take payments, or issue policies — instead, collect details and say an advisor will call back.
+- Never confirm a policy is purchased or provide specific financial advice.
+
+4.
+
+Flow: new insurance enquiry
+ON
+
+
+When the caller wants to buy insurance:
+1. Ask what type of insurance they are interested in (life, health, or term).
+2. Capture their full name and phone number, and read the number back to confirm.
+3. Say a licensed advisor will call them back to explain options and help with purchase.
+
+5.
+
+Flow: general questions
+ON
+
+
+When the caller asks about insurance products or process:
+1. Explain SecureLife offers life, health, and term insurance.
+2. For details, pricing, or eligibility, offer a callback from a licensed advisor.
+
+6.
+
+Scope & Redirects
+ON
+
+
+- If the caller asks for financial, legal, or tax advice: say 'I can't provide financial or legal advice — a licensed advisor can help with those questions.'
+- For emergencies or urgent claims: say 'For emergencies or urgent claims, please contact our claims helpline directly.' That is the whole answer; do not add tips.
+
+7.
+
+Guardrails
+ON
+
+
+- Never promise or confirm policy issuance or pricing.
+- Do not discuss competitors or compare products.
+
+8.
+
+FAQ
+ON
+
+
+User: What types of insurance do you offer?
+Agent: We offer life, health, and term insurance plans.
+User: Can you tell me the price for a health policy?
+Agent: I don't have pricing details, but a licensed advisor can call you back with all the information.
+User: Can I buy insurance right now on this call?
+Agent: I can't process purchases directly, but I can have an advisor call you to help with the process.
+User: How soon will someone call me back?
+Agent: An advisor will usually call you back within one business day.
+
+
+OmniDim
+
+SecureLife Insurance Customer Care
+
+Incoming
+Cost/min:
+$0.115
+Ask AI
+Test with
+Chat
+Web Call
+Phone Call
+
+Deploy
+
+Assistant Details
+
+Call Configuration
+
+Knowledge Base
+
+Integrations
+
+Post-Call
+
+Recent Calls
+UI
+
+Code
+
+Silence Handling
+What happens when a caller goes quiet or stops responding
+Configure how the agent behaves when the user is silent or idle.
+
+User Idle Threshold (sec)
+The duration in seconds to wait before considering the user idle.
+
+10
+Second(s)
+First Idle Message
+Static
+
+Dynamic
+Assistant will generate a dynamic message in the ongoing language within context if the user remains silent for 10 seconds.
+
+Second Idle Message
+Static
+
+Dynamic
+Assistant will generate a dynamic message in the ongoing language within context if the user remains silent for 10 seconds.
+
+Last Idle Message
+I'll leave you for now. Have a nice day!
+This message will be spoken if the user remains silent for a final 10 seconds. The call will automatically hang up after this message.
+
+
+End Call Rules
+Set conditions for when the assistant should hang up
+Max Call Duration (sec)
+The maximum duration in seconds before the call is automatically ended.
+
+600
+Second(s)
+Enable Automatic Call Ending
+Allow your agent to automatically end calls based on specific conditions
+
+Enabled
+
+End Call Settings
+End Call Condition *
+End the call when the user says goodbye, thank you, or indicates they are done with the conversation
+Describe the specific conditions or phrases that should trigger the agent to automatically end the call
+
+End Call Message *
+Static
+Dynamic
+Say a warm, personalized goodbye based on what was discussed in the conversation, and thank the user for their time.
+The AI will generate a unique goodbye based on your instruction.
+
+
+Transfer & Routing
+Route callers to phone numbers based on conditions
+Enable Call Transfer
+
+Allow your agent to transfer calls to human agents when needed
+
+Disabled
+
+Custom API Transfer
+
+Enable dynamic transfer routing based on API responses
+
+Disabled
+
+
+Response Behavior
+Filler phrases and personality style
+Filler Phrases
+
+Words or phrases spoken while your assistant is generating a response
+
+Disabled
+
+
+Ambient Sound
+Add background music or noise to calls
+Call audio
+Make calls feel more natural and avoid dead silence on the line.
+
+Disabled
+
+
+OmniDim
+
+SecureLife Insurance Customer Care
+
+Incoming
+Cost/min:
+$0.115
+Ask AI
+Test with
+Chat
+Web Call
+Phone Call
+
+Deploy
+
+Assistant Details
+
+Call Configuration
+
+Knowledge Base
+
+Integrations
+
+Post-Call
+
+Recent Calls
+UI
+
+Code
+Upload PDFs
+Add PDF files to your assistant's knowledge base
+No file chosen
+Drag and drop a file here, or click to select
+
+Supported formats: PDF (max 10MB)
+
+Website Knowledge Base
+Add website content to your assistant's knowledge base
+Website URL
+
+https://example.com/
+Add to Knowledge Base
+Low Storage Space Warning
+You only have 5.0 MB of knowledge base storage remaining. Consider upgrading your account to avoid upload restrictions.
+
+Upgrade
+No files uploaded yet
+
+Upload files to get started
+
+
+
+
+
+
+
+OmniDim
+
+SecureLife Insurance Customer Care
+
+Incoming
+Cost/min:
+$0.115
+Ask AI
+Test with
+Chat
+Web Call
+Phone Call
+
+Deploy
+
+Assistant Details
+
+Call Configuration
+
+Knowledge Base
+
+Integrations
+
+Post-Call
+
+Recent Calls
+UI
+
+Code
+Web search icon
+Web Search
+
+Allow your bot to search the web for information
+
+Off
+
+Integration
+
+All available integrations are already attached.
+Connect New Integrations
+
+All
+11
+Calendar & CRM
+6
+Messaging
+2
+Data & Sheets
+2
+Custom & Tools
+1
+Search integrations
+Cal.com logo
+Cal.com
+During Call
+Sync your Cal.com calendar to allow voice assistants to schedule meetings on your behalf.
+Connect
+Calendly logo
+Calendly
+During Call
+Connect your Calendly account to check availability and schedule appointments through your voice assistants.
+Connect
+Custom API logo
+Custom API
+During Call
+Connect to any custom API endpoint to extend your assistant's capabilities with external data and services.
+Connect
+Salesforce logo
+Salesforce
+Post Call
+Connect your Salesforce CRM to access customer data, manage leads, and update records through your voice assistants.
+Connect
+Google Calendar logo
+Google Calendar
+During Call
+Connect your Google Calendar to check availability and schedule appointments through your voice assistants.
+Connect
+Google Sheets logo
+Google Sheets
+Post Call
+Connect your Google Sheets to read, write, and manage spreadsheet data through your voice assistants.
+Connect
+Google Sheets logo
+Google Sheets
+During Call
+Connect your Google Sheets to read, write, and manage spreadsheet data during calls.
+Connect
+Slack logo
+Slack
+Post Call
+Connect your Slack workspace to receive notifications and updates about your voice assistants.
+Connect
+HubSpot logo
+HubSpot
+Post Call
+Connect your HubSpot platform to enable voice assistants to manage contacts, automate marketing campaigns, and handle customer service tasks.
+Connect
+Genesys logo
+Genesys
+Post Call
+Connect your Genesys Cloud contact center to enhance customer experience with AI-powered routing, real-time analytics, and seamless voice AI assistant integration.
+Connect
+WhatsApp Cloud logo
+WhatsApp Cloud
+During Call
+Send WhatsApp messages during calls using Meta Cloud API templates via your connected Cloud WhatsApp number.
+Connect
+
+
+
+
+
+
+OmniDim
+
+SecureLife Insurance Customer Care
+
+Incoming
+Cost/min:
+$0.115
+Ask AI
+Test with
+Chat
+Web Call
+Phone Call
+
+Deploy
+
+Assistant Details
+
+Call Configuration
+
+Knowledge Base
+
+Integrations
+
+Post-Call
+
+Recent Calls
+UI
+
+Code
+Post-Call Delivery Settings
+Add Configuration
+Delivery Method
+
+Select delivery method
+Remove
+Trigger based on Call Status
+Completed
+Voicemail Detected
+No Answer
+Busy
+Failed
+Including
+
+Call Summary
+A brief overview of the conversation including key points and outcomes
+
+Full Conversation
+Complete transcript of the entire conversation with timestamps
+
+Sentiment Analysis
+Analysis of customer mood and emotional responses throughout the call
+
+Extracted Information
+Key data points extracted from the conversation
+Extracted Variables
+Specify what variables you want to extract from the conversation. For each variable, provide a name and a description of how to extract it.
+
+insurance_type
+Type of insurance the caller is interested in (life, health, or term). NA if not provided.
+
+full_name
+Full name of the caller. NA if not provided.
+
+phone_number
+Phone number provided by the caller, digits only. NA if not provided.
+
+Add Variable
+
+
+
+
+
+
+OmniDim
+
+SecureLife Insurance Customer Care
+
+Incoming
+Cost/min:
+$0.115
+Ask AI
+Test with
+Chat
+Web Call
+Phone Call
+
+Deploy
+
+Assistant Details
+
+Call Configuration
+
+Knowledge Base
+
+Integrations
+
+Post-Call
+
+Recent Calls
+UI
+
+Code
+Recent Calls
+Filters
+
+
+All directions
+
+All statuses
+
+All durations
+Refresh
+Outgoing
+Web Call
+Assistant
+
+June 20, 2026 at 03:31 AM
+
+•
+04:33
+
+Test-Web Call
+ID: #4901075
+completed
++918048799695
++918309497947
+
+June 20, 2026 at 03:30 AM
+
+•
+00:00
+
+Test-Call
+ID: #4901074
+completed
+Outgoing
+Web Call
+Assistant
+
+June 20, 2026 at 03:26 AM
+
+•
+00:05
+
+Test-Web Call
+ID: #4901071
+completed
