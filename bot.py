@@ -117,6 +117,7 @@ class TranscriptLogger(FrameProcessor):
 
 async def run_bot(websocket, stream_sid: str, call_sid: str):
     """Runs the main bot pipeline for the active call."""
+    # pylint: disable=too-many-locals
     await insert_call(call_sid, stream_sid)
 
     transport = FastAPIWebsocketTransport(
