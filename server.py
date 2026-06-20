@@ -1,16 +1,17 @@
 import json
 import os
 
-from dotenv import load_dotenv
-load_dotenv()
-
 import uvicorn
+from dotenv import load_dotenv
 from fastapi import FastAPI, WebSocket
 from fastapi.responses import HTMLResponse
 from twilio.rest import Client
-from twilio.twiml.voice_response import Connect, Stream, VoiceResponse
+from twilio.twiml.voice_response import Connect, VoiceResponse
 
 from bot import run_bot
+
+load_dotenv()
+
 
 app = FastAPI()
 
@@ -22,7 +23,10 @@ async def root():
 
 @app.get("/make-call")
 async def make_call():
-    client = Client(os.getenv("TWILIO_ACCOUNT_SID"), os.getenv("TWILIO_AUTH_TOKEN"))
+    client = Client(
+        os.getenv("TWILIO_ACCOUNT_SID"),
+        os.getenv("TWILIO_AUTH_TOKEN"),
+    )
     call = client.calls.create(
         url=f"https://{os.getenv('PUBLIC_URL')}/incoming-call",
         to=os.getenv("MY_INDIAN_NUMBER"),
