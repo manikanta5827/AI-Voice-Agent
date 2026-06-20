@@ -2,11 +2,11 @@ import Fastify from "fastify";
 import formbody from "@fastify/formbody";
 import websocket from "@fastify/websocket";
 import twilio from "twilio";
-import { SonioxSTT } from "./stt.ts";
-import { CartesiaTTS } from "./tts.ts";
-import { getLLMResponseStream } from "./llm.ts";
+import { SonioxSTT } from "./service/stt.ts";
+import { CartesiaTTS } from "./service/tts.ts";
+import { getLLMResponseStream } from "./service/llm.ts";
 import type { ModelMessage } from "ai";
-import { initDB, insertCall, insertMessage, endCall } from "./db.ts";
+import { initDB, insertCall, insertMessage, endCall } from "./db/db.ts";
 
 const fastify = Fastify({ logger: true });
 
@@ -87,14 +87,20 @@ fastify.register(async (fastifyInstance) => {
     // Play a TTS message outside the main pipeline (idle warnings, max-duration, etc.)
     const playIdleMessage = (text: string, onDone?: () => void) => {
       tts.newContext(); // fresh context_id — prior contexts are closed after flush()
+      let idleAudioStart: number | null = null;
       tts.onAudioChunk = (buf: Buffer) => {
         if (!streamSid) return;
+        if (!idleAudioStart) idleAudioStart = Date.now();
         socket.send(JSON.stringify({ event: "media", streamSid, media: { payload: buf.toString("base64") } }));
       };
       tts.onComplete = () => {
         tts.onAudioChunk = null;
         tts.onComplete = null;
-        onDone?.();
+        // Wait for Twilio to finish playing before calling onDone (mirrors runPipeline logic)
+        const totalMs = (tts.totalMulawBytes / 8000) * 1000;
+        const elapsed = idleAudioStart ? Date.now() - idleAudioStart : 0;
+        const remaining = Math.max(totalMs - elapsed, 0);
+        setTimeout(() => onDone?.(), remaining + 300);
       };
       tts.sendText(text);
       tts.flush();
