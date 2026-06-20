@@ -58,7 +58,7 @@ class IdleDetector(FrameProcessor):
 
     async def _loop(self):
         try:
-            await asyncio.sleep(15)
+            await asyncio.sleep(45)
             await self._task.queue_frames([TTSSpeakFrame(IDLE_BYE_MSG), EndFrame()])
         except asyncio.CancelledError:
             pass

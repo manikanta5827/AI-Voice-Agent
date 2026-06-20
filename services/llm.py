@@ -88,6 +88,6 @@ def create_llm() -> OpenAILLMService:
     """Creates and configures the LLM service for the bot."""
     return OpenAILLMService(
         api_key=os.getenv("AI_GATEWAY_API_KEY"),
-        model="gpt-4.1-mini",
+        settings=OpenAILLMService.Settings(model="gpt-4.1-mini"),
         base_url="https://ai-gateway.vercel.sh/v1"
     )
