@@ -18,6 +18,11 @@ from pipecat.transports.websocket.fastapi import (
     FastAPIWebsocketParams,
     FastAPIWebsocketTransport,
 )
+from pipecat.turns.user_start.vad_user_turn_start_strategy import VADUserTurnStartStrategy
+from pipecat.turns.user_stop.speech_timeout_user_turn_stop_strategy import (
+    SpeechTimeoutUserTurnStopStrategy,
+)
+from pipecat.turns.user_turn_strategies import UserTurnStrategies
 
 from db import end_call, insert_call, insert_message
 from services.llm import SYSTEM_PROMPT, create_llm
@@ -72,6 +77,11 @@ class IdleDetector(FrameProcessor):
     async def cleanup(self):
         if self._timer:
             self._timer.cancel()
+            try:
+                await self._timer  # wait until fully cancelled, not just signalled
+            except asyncio.CancelledError:
+                pass
+            self._timer = None
         await super().cleanup()
 
 
@@ -123,10 +133,22 @@ async def run_bot(websocket, stream_sid: str, call_sid: str):
     tts = create_tts()
 
     context = LLMContext(messages=[{"role": "system", "content": SYSTEM_PROMPT}])
-    # VAD lives in user_params so Silero gates when the LLM starts listening
+    # Bug fixes:
+    # 1. Only VADUserTurnStartStrategy — removing TranscriptionUserTurnStartStrategy
+    #    prevents late Soniox chunks from re-triggering the LLM after a turn ends.
+    # 2. SpeechTimeoutUserTurnStopStrategy replaces Smart Turn v3 (English-tuned ML
+    #    model that marks Telugu short phrases INCOMPLETE, causing silent freezes).
+    #    0.8s silence after last transcript → LLM fires. Predictable for phone calls.
     pair = LLMContextAggregatorPair(
         context,
-        user_params=LLMUserAggregatorParams(vad_analyzer=SileroVADAnalyzer()),
+        user_params=LLMUserAggregatorParams(
+            vad_analyzer=SileroVADAnalyzer(),
+            user_turn_strategies=UserTurnStrategies(
+                start=[VADUserTurnStartStrategy()],
+                stop=[SpeechTimeoutUserTurnStopStrategy(user_speech_timeout=0.8)],
+            ),
+            user_turn_stop_timeout=2.0,
+        ),
     )
 
     # task=None here; assigned after PipelineTask is created to avoid circular dep

@@ -32,7 +32,8 @@ async def make_call():
         to=os.getenv("MY_INDIAN_NUMBER"),
         from_=os.getenv("TWILIO_US_NUMBER"),
     )
-    return {"status": "calling", "sid": call.sid}
+    print(os.getenv("MY_INDIAN_NUMBER"))
+    return {"status": "calling", "sid": call.sid, "num": os.getenv("MY_INDIAN_NUMBER")}
 
 
 @app.post("/incoming-call")
