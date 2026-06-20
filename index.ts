@@ -2,7 +2,7 @@ import Fastify from "fastify";
 import formbody from "@fastify/formbody";
 import websocket from "@fastify/websocket";
 import twilio from "twilio";
-import { SarvamSTT } from "./stt.ts";
+import { SonioxSTT } from "./stt.ts";
 import { CartesiaTTS } from "./tts.ts";
 import { getLLMResponseStream } from "./llm.ts";
 import type { ModelMessage } from "ai";
@@ -81,7 +81,7 @@ fastify.register(async (fastifyInstance) => {
     let audioStartTime: number | null = null;
     const conversationHistory: ModelMessage[] = [];
 
-    const stt = new SarvamSTT();
+    const stt = new SonioxSTT();
     const tts = new CartesiaTTS();
 
     // Play a TTS message outside the main pipeline (idle warnings, max-duration, etc.)
