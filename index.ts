@@ -106,11 +106,11 @@ fastify.register(async (fastifyInstance) => {
 
       idleWarnTimeout = setTimeout(() => {
         if (isProcessing) return;
-        playIdleMessage("అక్కడ ఉన్నారా sir?", () => {
+        playIdleMessage("అక్కడ ఉన్నారా?", () => {
           idleHangupTimeout = setTimeout(async () => {
             if (isProcessing) return;
-            console.log("📵 20s total idle — ending call");
-            playIdleMessage("సరే sir, తర్వాత మాట్లాడదాం. Bye!");
+            console.log("📵 15s total idle — ending call");
+            playIdleMessage("సరే, తర్వాత మాట్లాడదాం. Bye!");
             await endCall(callSid).catch(() => {});
             setTimeout(async () => {
               try {
@@ -120,7 +120,7 @@ fastify.register(async (fastifyInstance) => {
             }, 3000);
           }, 10_000);
         });
-      }, 10_000);
+      }, 5_000);
     };
 
     const cleanup = () => {
@@ -165,7 +165,7 @@ fastify.register(async (fastifyInstance) => {
       tts.onComplete = null;
     };
 
-    const runPipeline = async (transcript: string) => {
+    const runPipeline = async (transcript: string, farewellMode = false) => {
       isProcessing = true;
       const abort = new AbortController();
       currentAbort = abort;
@@ -208,13 +208,22 @@ fastify.register(async (fastifyInstance) => {
       };
 
       try {
-        conversationHistory.push({ role: "user", content: transcript });
-        insertMessage(callSid, "user", transcript).catch(e => console.error("❌ DB:", e));
+        let llmMessages: ModelMessage[];
+        if (farewellMode) {
+          llmMessages = [
+            ...conversationHistory,
+            { role: "system", content: "Maximum call duration reached. Give one brief, warm Telugu farewell — one sentence only. Do not mention time limits." },
+          ];
+        } else {
+          conversationHistory.push({ role: "user", content: transcript });
+          insertMessage(callSid, "user", transcript).catch(e => console.error("❌ DB:", e));
+          llmMessages = conversationHistory;
+        }
 
         // Stream LLM → extract sentences → send each to TTS WebSocket as it arrives
         let textBuffer = "";
         let fullResponse = "";
-        const result = await getLLMResponseStream(conversationHistory, abort.signal);
+        const result = await getLLMResponseStream(llmMessages, abort.signal);
 
         for await (const chunk of result.textStream) {
           if (abort.signal.aborted) break;
@@ -289,23 +298,20 @@ fastify.register(async (fastifyInstance) => {
             callSid = msg.start?.callSid || "";
             console.log("▶️ Stream started, Stream SID:", streamSid);
             insertCall(callSid, streamSid).catch(e => console.error("❌ DB insertCall:", e));
+            const maxMinutes = parseInt(Bun.env.MAX_CALL_MINUTES || "5");
             maxDurationTimer = setTimeout(() => {
-              console.log("⏰ Max call duration (600s) — ending call");
-              playIdleMessage("సరే sir, call time అయిపోయింది. తర్వాత మాట్లాడదాం!", async () => {
-                await endCall(callSid).catch(() => {});
-                try {
-                  const client = twilio(Bun.env.TWILIO_ACCOUNT_SID!, Bun.env.TWILIO_AUTH_TOKEN!);
-                  await client.calls(callSid).update({ status: "completed" });
-                } catch { socket.close(); }
-              });
-            }, 600_000);
+              console.log(`⏰ Max call duration (${maxMinutes}min) — sending LLM farewell`);
+              shouldEndAfterResponse = true;
+              if (!isProcessing) runPipeline("", true);
+              // if isProcessing, shouldEndAfterResponse triggers hangup after current response finishes
+            }, maxMinutes * 60_000);
             // Connect TTS eagerly (needs to be ready when LLM output arrives).
             // STT connects lazily on first audio chunk — Sarvam drops idle STT connections.
             tts.connect()
               .then(() => {
                 console.log("✅ TTS WebSocket ready");
                 playIdleMessage(
-                  "నమస్కారం sir, SecureLife Insurance కి స్వాగతం. మీకు ఏ విషయంలో సహాయం కావాలి?",
+                  "నమస్కారం, SecureLife Insurance కి స్వాగతం. మీకు ఏ విషయంలో సహాయం కావాలి?",
                   () => resetInactivityTimer()
                 );
               })
@@ -313,7 +319,6 @@ fastify.register(async (fastifyInstance) => {
             break;
 
           case "media":
-            resetInactivityTimer();
             const chunk = Buffer.from(msg.media.payload, "base64");
             stt.sendChunk(chunk);
             break;
