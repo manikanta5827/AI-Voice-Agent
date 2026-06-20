@@ -1,0 +1,6 @@
+pipecat-ai[soniox,cartesia,openai,silero]>=0.0.60
+fastapi
+uvicorn[standard]
+python-dotenv
+twilio
+asyncpg

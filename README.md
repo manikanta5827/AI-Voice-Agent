@@ -1,98 +1,141 @@
-# Outbound Telugu AI Voice Agent
+# AI Voice Agent — SecureLife Insurance
 
-A complete real-time outbound AI voice agent built using **Bun**, **TypeScript**, **Fastify**, **Twilio (Media Streams)**, **Sarvam AI (STT & TTS)**, and **Google Gemini Flash (LLM)**. 
+Telugu-language voice agent for SecureLife Insurance. Built with Pipecat, Soniox STT, Cartesia TTS, OpenAI GPT-4.1-mini, and Twilio Media Streams.
 
-The agent connects a phone call, greets the user in Telugu, streams real-time audio bidirectionally, transcribes audio to text, generates natural Telugu conversation responses, synthesizes responses back into audio, and streams it back to the caller.
+## Stack
 
----
+| Layer | Service |
+|-------|---------|
+| Telephony | Twilio (Media Streams via WebSocket) |
+| STT | Soniox (`stt-rt-v5`, Telugu) |
+| LLM | OpenAI GPT-4.1-mini |
+| TTS | Cartesia Sonic-2 (Bavani voice) |
+| Orchestration | Pipecat |
+| DB | Supabase PostgreSQL (raw `asyncpg`) |
 
-## Architecture Flow
-
-```
-[ Twilio Outbound Call ] <====== Bidirectional WebSockets (Mulaw 8kHz) ======> [ Fastify Server ]
-                                                                                   ||
-                                                                                   ||
-         +-------------------------------------------------------------------------+
-         |
-         v
-  1. Mulaw -> WAV (16-bit PCM 8kHz)
-  2. Sarvam AI Saaras v3 STT REST API ======> [ Transcript (Telugu Script) ]
-                                                            ||
-                                                            v
-                                             3. Google Gemini 2.0 Flash LLM
-                                                            ||
-                                                            v
-  5. Mulaw Audio (8kHz base64) <==== 4. Sarvam AI Bulbul v3 TTS (Telugu Anushka Voice)
-```
-
----
-
-## Features
-
-- **G.711 Mu-law Decoding & Encoding:** Written in pure TypeScript with zero external OS or binary audio dependencies (no `ffmpeg` needed!).
-- **Smart Silence & Buffer Controller:** Accurately gathers incoming audio, handles chunk intervals, triggers transcription at silence gaps, and halts user audio capture while the agent response is playing to prevent echo loops.
-- **Telugu script response generation:** Fully configured model with Gemini Flash 2.0.
-
----
-
-## Setup Instructions
+## Setup
 
 ### 1. Prerequisites
-Ensure you have [Bun](https://bun.sh) installed.
 
-### 2. Installation
-Install the project dependencies:
+- Python 3.11+
+- [ngrok](https://ngrok.com) for local dev tunnel
+
+### 2. Install dependencies
+
 ```bash
-bun install
+python -m venv .venv
+source .venv/bin/activate      # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
 ```
 
-### 3. Environment Variables
-Copy `.env.example` to `.env` and fill in your keys:
+### 3. Configure environment
+
 ```bash
 cp .env.example .env
 ```
 
-Define the variables:
-- `TWILIO_ACCOUNT_SID` & `TWILIO_AUTH_TOKEN`: Find these on your Twilio console dashboard.
-- `TWILIO_US_NUMBER`: A purchased Twilio US phone number (must support voice calls).
-- `MY_INDIAN_NUMBER`: Your target mobile number (e.g., `+91XXXXXXXXXX`).
-- `SARVAM_API_KEY`: API key from [Sarvam AI](https://www.sarvam.ai/).
-- `GEMINI_API_KEY`: Google Generative AI key from Google AI Studio.
-- `PUBLIC_URL`: The public-facing host url of your server (do **not** include `https://` or `wss://` prefixes).
+Fill in `.env`:
 
-### 4. Create a Local Tunnel (ngrok / Cloudflare)
-Twilio needs to connect to your local server. Start an ngrok tunnel on port 8080:
+```env
+PUBLIC_URL=your-ngrok-subdomain.ngrok-free.app   # no https://
+
+TWILIO_ACCOUNT_SID=...
+TWILIO_AUTH_TOKEN=...
+TWILIO_US_NUMBER=+1...
+MY_INDIAN_NUMBER=+91...
+
+SONIOX_API_KEY=...
+
+CARTESIA_API_KEY=...
+CARTESIA_VOICE_ID=...   # Bavani voice UUID from cartesia.ai/voices
+
+OPENAI_API_KEY=...
+
+PORT=8080
+MAX_CALL_MINUTES=3
+
+DATABASE_URL=postgresql://postgres:[PASSWORD]@db.[ref].supabase.co:5432/postgres
+```
+
+### 4. Database
+
+Run in Supabase SQL editor (skip if tables already exist):
+
+```sql
+CREATE TABLE IF NOT EXISTS calls (
+  id          SERIAL PRIMARY KEY,
+  call_sid    TEXT UNIQUE NOT NULL,
+  stream_sid  TEXT,
+  started_at  TIMESTAMPTZ,
+  ended_at    TIMESTAMPTZ
+);
+
+CREATE TABLE IF NOT EXISTS messages (
+  id         SERIAL PRIMARY KEY,
+  call_sid   TEXT NOT NULL,
+  role       TEXT NOT NULL,
+  content    TEXT NOT NULL,
+  created_at TIMESTAMPTZ
+);
+```
+
+### 5. Start the server
+
+```bash
+python server.py
+```
+
+Dev mode with auto-reload:
+
+```bash
+uvicorn server:app --reload --port 8080
+```
+
+### 6. Expose via ngrok
+
 ```bash
 ngrok http 8080
 ```
-Copy the forwarding domain (e.g. `1234-56-78.ngrok-free.app`) and paste it as `PUBLIC_URL` in your `.env` file (e.g. `PUBLIC_URL=1234-56-78.ngrok-free.app`).
 
----
+Copy the subdomain (e.g. `abc-123.ngrok-free.app`) → set as `PUBLIC_URL` in `.env`.
 
-## Running the Server
+### 7. Configure Twilio webhook
 
-Start the Fastify server using Bun:
-```bash
-bun run index.ts
+Set your Twilio phone number's webhook URL to:
+```
+https://YOUR_NGROK_URL/incoming-call   (HTTP POST)
 ```
 
----
+### 8. Trigger a call
 
-## Triggering the Outbound Call
-
-Once the server is running and the tunnel is set up, make a GET request to trigger the outbound call:
 ```bash
 curl http://localhost:8080/make-call
 ```
-Alternatively, visit `http://localhost:8080/make-call` in your web browser.
 
-The server will instruct Twilio to dial your mobile number. When you answer the call, the Telugu AI agent will greet you and start responding to whatever you speak.
+## File structure
 
----
+```
+server.py          FastAPI entry — Twilio webhooks + WebSocket handshake
+bot.py             Pipecat pipeline — STT → LLM → TTS, idle/end-call logic
+services/
+  stt.py           Soniox STT (Telugu, stt-rt-v5)
+  tts.py           Cartesia TTS (Sonic-2, Bavani voice)
+  llm.py           OpenAI LLM + system prompt (Kavitha persona)
+db.py              Supabase PostgreSQL — call and message logging
+requirements.txt
+.env.example
+```
 
-## Codebase Map
+## Database: why no ORM?
 
-- [index.ts](file:///Users/manikanta/Documents/personal-projects/AI%20Voice%20Agent/index.ts): Main Fastify server, Webhook handles, and Media Stream WebSocket loops.
-- [llm.ts](file:///Users/manikanta/Documents/personal-projects/AI%20Voice%20Agent/llm.ts): Gemini Flash 2.0 client configuring Telugu speech constraints, persona guidelines, and call-history retention.
-- [stt.ts](file:///Users/manikanta/Documents/personal-projects/AI%20Voice%20Agent/stt.ts): Standard G.711 Mu-law decoding to PCM, WAV header preparation, and Sarvam Saaras v3 STT.
-- [tts.ts](file:///Users/manikanta/Documents/personal-projects/AI%20Voice%20Agent/tts.ts): Sarvam Bulbul v3 TTS synthesis, PCM parsing, and conversion back to Twilio's Mu-law standard.
+Two tables, four queries. Raw `asyncpg` (PostgreSQL async driver) is the right fit — no abstractions needed.
+
+If you later add more tables or complex joins, [SQLAlchemy 2.x async](https://docs.sqlalchemy.org/en/20/orm/extensions/asyncio.html) is the Python standard ORM. Add it then, not now.
+
+## Features
+
+- Barge-in: user can interrupt agent mid-response (Silero VAD + Pipecat interruptions)
+- Idle detection: 5s warning → 10s hangup
+- Max call duration: `MAX_CALL_MINUTES` env var (default 3 min), LLM generates farewell
+- End-call on goodbye signals (`bye`, `చాలు`, `అయిపోయింది`, etc.)
+- All turns logged to Supabase
