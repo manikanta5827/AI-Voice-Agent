@@ -106,11 +106,11 @@ fastify.register(async (fastifyInstance) => {
 
       idleWarnTimeout = setTimeout(() => {
         if (isProcessing) return;
-        playIdleMessage("అక్కడ ఉన్నారా అండీ?", () => {
+        playIdleMessage("అక్కడ ఉన్నారా sir?", () => {
           idleHangupTimeout = setTimeout(async () => {
             if (isProcessing) return;
             console.log("📵 20s total idle — ending call");
-            playIdleMessage("సరే అండీ, తర్వాత మాట్లాడదాం. Bye!");
+            playIdleMessage("సరే sir, తర్వాత మాట్లాడదాం. Bye!");
             await endCall(callSid).catch(() => {});
             setTimeout(async () => {
               try {
@@ -214,7 +214,7 @@ fastify.register(async (fastifyInstance) => {
         // Stream LLM → extract sentences → send each to TTS WebSocket as it arrives
         let textBuffer = "";
         let fullResponse = "";
-        const result = await getLLMResponseStream(conversationHistory);
+        const result = await getLLMResponseStream(conversationHistory, abort.signal);
 
         for await (const chunk of result.textStream) {
           if (abort.signal.aborted) break;
@@ -260,20 +260,15 @@ fastify.register(async (fastifyInstance) => {
       resetInactivityTimer();
 
       if (isProcessing) {
-        if (isSpeaking) {
-          // Barge-in: user started speaking while agent is playing audio
-          console.log("🛑 Barge-in (STT) — stopping agent audio");
-          currentAbort?.abort();
-          socket.send(JSON.stringify({ event: "clear", streamSid }));
-          resetPipelineState();
-          // Fall through to process new transcript
-        } else {
-          return; // Agent still in LLM phase — ignore
-        }
+        console.log("🛑 Barge-in — interrupting agent");
+        currentAbort?.abort();
+        if (isSpeaking) socket.send(JSON.stringify({ event: "clear", streamSid }));
+        resetPipelineState();
+        // Fall through to process new transcript
       }
 
       console.log(`👤 User: "${transcript}"`);
-      const END_SIGNALS = ["bye", "goodbye", "ok bye", "thank you", "thanks", "థాంక్యూ", "అయిపోయింది", "చాలు అండీ"];
+      const END_SIGNALS = ["bye", "goodbye", "ok bye", "thank you", "thanks", "థాంక్యూ", "అయిపోయింది", "చాలు"];
       if (END_SIGNALS.some(s => transcript.toLowerCase().includes(s))) shouldEndAfterResponse = true;
       runPipeline(transcript);
     };
@@ -296,7 +291,7 @@ fastify.register(async (fastifyInstance) => {
             insertCall(callSid, streamSid).catch(e => console.error("❌ DB insertCall:", e));
             maxDurationTimer = setTimeout(() => {
               console.log("⏰ Max call duration (600s) — ending call");
-              playIdleMessage("సరే అండీ, call time అయిపోయింది. తర్వాత మాట్లాడదాం!", async () => {
+              playIdleMessage("సరే sir, call time అయిపోయింది. తర్వాత మాట్లాడదాం!", async () => {
                 await endCall(callSid).catch(() => {});
                 try {
                   const client = twilio(Bun.env.TWILIO_ACCOUNT_SID!, Bun.env.TWILIO_AUTH_TOKEN!);
@@ -310,7 +305,7 @@ fastify.register(async (fastifyInstance) => {
               .then(() => {
                 console.log("✅ TTS WebSocket ready");
                 playIdleMessage(
-                  "నమస్కారం అండీ... SecureLife Insurance కి స్వాగతం. మీకు ఏ విషయంలో సహాయం కావాలి?",
+                  "నమస్కారం sir, SecureLife Insurance కి స్వాగతం. మీకు ఏ విషయంలో సహాయం కావాలి?",
                   () => resetInactivityTimer()
                 );
               })
