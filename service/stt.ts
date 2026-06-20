@@ -10,7 +10,9 @@ export class SonioxSTT {
   private flushTimer: Timer | null = null;
 
   onFinalTranscript: ((transcript: string) => void) | null = null;
+  onSpeechStart: (() => void) | null = null;
   onError: ((err: Error) => void) | null = null;
+  private speaking = false;
 
   private ensureConnected(): Promise<void> {
     if (this.ws?.readyState === WebSocket.OPEN) return Promise.resolve();
@@ -63,11 +65,13 @@ export class SonioxSTT {
           if (hasNonFinal) {
             // User still speaking — cancel any pending flush
             if (this.flushTimer) { clearTimeout(this.flushTimer); this.flushTimer = null; }
+            if (!this.speaking) { this.speaking = true; this.onSpeechStart?.(); }
           } else if (gotFinal && this.finalText.trim()) {
             // Endpoint detected: all tokens final, none pending → speaker paused
             if (this.flushTimer) clearTimeout(this.flushTimer);
             this.flushTimer = setTimeout(() => {
               this.flushTimer = null;
+              this.speaking = false;
               const transcript = this.finalText.trim().replace(/<end>/gi, "").trim();
               this.finalText = "";
               if (transcript) {
@@ -109,5 +113,6 @@ export class SonioxSTT {
     this.ws?.close();
     this.ws = null;
     this.finalText = "";
+    this.speaking = false;
   }
 }

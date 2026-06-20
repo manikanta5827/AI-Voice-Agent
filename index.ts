@@ -79,6 +79,7 @@ fastify.register(async (fastifyInstance) => {
     let idleHangupTimeout: Timer | null = null;
     let maxDurationTimer: Timer | null = null;
     let audioStartTime: number | null = null;
+    let userHasSpoken = false;
     const conversationHistory: ModelMessage[] = [];
 
     const stt = new SonioxSTT();
@@ -271,7 +272,13 @@ fastify.register(async (fastifyInstance) => {
       }
     };
 
+    stt.onSpeechStart = () => {
+      userHasSpoken = true;
+      resetInactivityTimer();
+    };
+
     stt.onFinalTranscript = (transcript: string) => {
+      userHasSpoken = true;
       resetInactivityTimer();
 
       if (isProcessing) {
@@ -318,7 +325,7 @@ fastify.register(async (fastifyInstance) => {
                 console.log("✅ TTS WebSocket ready");
                 playIdleMessage(
                   "నమస్కారం, SecureLife Insurance కి స్వాగతం. మీకు ఏ విషయంలో సహాయం కావాలి?",
-                  () => resetInactivityTimer()
+                  () => { if (!userHasSpoken) resetInactivityTimer(); }
                 );
               })
               .catch((e) => console.error("❌ Failed to connect TTS WebSocket:", e));
