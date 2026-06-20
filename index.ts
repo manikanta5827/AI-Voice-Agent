@@ -86,6 +86,7 @@ fastify.register(async (fastifyInstance) => {
 
     // Play a TTS message outside the main pipeline (idle warnings, max-duration, etc.)
     const playIdleMessage = (text: string, onDone?: () => void) => {
+      tts.newContext(); // fresh context_id — prior contexts are closed after flush()
       tts.onAudioChunk = (buf: Buffer) => {
         if (!streamSid) return;
         socket.send(JSON.stringify({ event: "media", streamSid, media: { payload: buf.toString("base64") } }));
@@ -206,10 +207,6 @@ fastify.register(async (fastifyInstance) => {
         }, remainingMs + 500);
       };
 
-      // Send thinking filler immediately — covers LLM TTFT gap
-      const fillers = ["అవును...", "సరే...", "ఒక్క నిముషం అండీ..."];
-      tts.sendText(fillers[Math.floor(Math.random() * fillers.length)]);
-
       try {
         conversationHistory.push({ role: "user", content: transcript });
         insertMessage(callSid, "user", transcript).catch(e => console.error("❌ DB:", e));
@@ -259,7 +256,6 @@ fastify.register(async (fastifyInstance) => {
       }
     };
 
-    // STT fires this when Sarvam VAD detects end-of-utterance
     stt.onFinalTranscript = (transcript: string) => {
       resetInactivityTimer();
 
@@ -324,7 +320,7 @@ fastify.register(async (fastifyInstance) => {
           case "media":
             resetInactivityTimer();
             const chunk = Buffer.from(msg.media.payload, "base64");
-            stt.sendChunk(chunk); // Stream directly to Sarvam STT — no local buffering
+            stt.sendChunk(chunk);
             break;
 
           case "stop":

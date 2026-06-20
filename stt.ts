@@ -68,7 +68,7 @@ export class SonioxSTT {
             if (this.flushTimer) clearTimeout(this.flushTimer);
             this.flushTimer = setTimeout(() => {
               this.flushTimer = null;
-              const transcript = this.finalText.trim();
+              const transcript = this.finalText.trim().replace(/<end>/gi, "").trim();
               this.finalText = "";
               if (transcript) {
                 console.log(`🎙️ STT: "${transcript}"`);

@@ -23,10 +23,13 @@ export class CartesiaTTS {
 
   get totalMulawBytes(): number { return this._totalMulawBytes; }
 
-  resetByteCount(): void {
+  newContext(): void {
     this._totalMulawBytes = 0;
-    this.contextId = crypto.randomUUID(); // new context per pipeline turn
+    this.contextId = crypto.randomUUID();
   }
+
+  // ponytail: alias kept so callers don't break
+  resetByteCount(): void { this.newContext(); }
 
   async connect(): Promise<void> {
     return new Promise((resolve, reject) => {
