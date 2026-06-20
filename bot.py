@@ -1,9 +1,16 @@
+"""Module for handling the AI Voice Agent bot logic using Pipecat."""
+
 import asyncio
 import os
 
 from loguru import logger
 from pipecat.audio.vad.silero import SileroVADAnalyzer
-from pipecat.frames.frames import EndFrame, Frame, TranscriptionFrame, TTSSpeakFrame
+from pipecat.frames.frames import (
+    EndFrame,
+    Frame,
+    TranscriptionFrame,
+    TTSSpeakFrame,
+)
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
@@ -29,20 +36,31 @@ END_SIGNALS = [
     "థాంక్యూ", "అయిపోయింది", "చాలు",
 ]
 
-WELCOME_MSG = "నమస్కారం, SecureLife Insurance కి స్వాగతం. మీకు ఏ విషయంలో సహాయం కావాలి?"
+WELCOME_MSG = (
+    "నమస్కారం, SecureLife Insurance కి స్వాగతం. "
+    "మీకు ఏ విషయంలో సహాయం కావాలి?"
+)
 IDLE_WARN_MSG = "అక్కడ ఉన్నారా?"
 IDLE_BYE_MSG = "సరే, తర్వాత మాట్లాడదాం. Bye!"
 
 
 class IdleDetector(FrameProcessor):
-    """Resets on any user transcript. Warns after 5s silence, hangs up after 10s more."""
+    """
+    Resets on any user transcript.
+    Warns after 5s silence, hangs up after 10s more.
+    """
 
-    def __init__(self, task: PipelineTask):
+    def __init__(self, task: PipelineTask | None = None):
         super().__init__()
         self._task = task
         self._timer: asyncio.Task | None = None
 
+    def set_task(self, task: PipelineTask):
+        """Sets the pipeline task."""
+        self._task = task
+
     def start(self):
+        """Starts the idle detector timer."""
         self._reset()
 
     def _reset(self):
@@ -55,7 +73,9 @@ class IdleDetector(FrameProcessor):
             await asyncio.sleep(5)
             await self._task.queue_frames([TTSSpeakFrame(IDLE_WARN_MSG)])
             await asyncio.sleep(10)
-            await self._task.queue_frames([TTSSpeakFrame(IDLE_BYE_MSG), EndFrame()])
+            await self._task.queue_frames(
+                [TTSSpeakFrame(IDLE_BYE_MSG), EndFrame()]
+            )
         except asyncio.CancelledError:
             pass
 
@@ -74,10 +94,14 @@ class IdleDetector(FrameProcessor):
 class TranscriptLogger(FrameProcessor):
     """Logs user transcripts to DB and detects end-call signals."""
 
-    def __init__(self, task: PipelineTask, call_sid: str):
+    def __init__(self, task: PipelineTask | None, call_sid: str):
         super().__init__()
         self._task = task
         self._call_sid = call_sid
+
+    def set_task(self, task: PipelineTask):
+        """Sets the pipeline task."""
+        self._task = task
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
@@ -92,6 +116,7 @@ class TranscriptLogger(FrameProcessor):
 
 
 async def run_bot(websocket, stream_sid: str, call_sid: str):
+    """Runs the main bot pipeline for the active call."""
     await insert_call(call_sid, stream_sid)
 
     transport = FastAPIWebsocketTransport(
@@ -112,7 +137,9 @@ async def run_bot(websocket, stream_sid: str, call_sid: str):
     llm = create_llm()
     tts = create_tts()
 
-    context = LLMContext(messages=[{"role": "system", "content": SYSTEM_PROMPT}])
+    context = LLMContext(
+        messages=[{"role": "system", "content": SYSTEM_PROMPT}]
+    )
     pair = LLMContextAggregatorPair(
         context,
         user_params=LLMUserAggregatorParams(vad_analyzer=SileroVADAnalyzer()),
@@ -136,11 +163,11 @@ async def run_bot(websocket, stream_sid: str, call_sid: str):
         params=PipelineParams(allow_interruptions=True),
     )
 
-    idle._task = task
-    transcript_logger._task = task
+    idle.set_task(task)
+    transcript_logger.set_task(task)
 
     @transport.event_handler("on_client_connected")
-    async def on_connected(transport, client):
+    async def on_connected(_transport, _client):
         logger.info("Twilio connected — playing welcome")
         idle.start()
         await task.queue_frames([TTSSpeakFrame(WELCOME_MSG)])
@@ -153,7 +180,10 @@ async def run_bot(websocket, stream_sid: str, call_sid: str):
         logger.info(f"Max duration {max_min}min reached")
         context.messages.append({
             "role": "system",
-            "content": "Maximum call duration reached. Give one brief, warm Telugu farewell — one sentence only. Do not mention time limits.",
+            "content": (
+                "Maximum call duration reached. Give one brief, warm Telugu "
+                "farewell — one sentence only. Do not mention time limits."
+            ),
         })
         await end_call(call_sid)
         asyncio.create_task(_delayed_end(task, secs=5))
