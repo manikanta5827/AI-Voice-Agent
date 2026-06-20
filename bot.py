@@ -3,7 +3,14 @@ import os
 
 from loguru import logger
 from pipecat.audio.vad.silero import SileroVADAnalyzer
-from pipecat.frames.frames import EndFrame, Frame, TranscriptionFrame, TTSSpeakFrame
+from pipecat.frames.frames import (
+    EndFrame,
+    Frame,
+    LLMFullResponseEndFrame,
+    LLMTextFrame,
+    TranscriptionFrame,
+    TTSSpeakFrame,
+)
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
@@ -25,6 +32,10 @@ from pipecat.turns.user_stop.speech_timeout_user_turn_stop_strategy import (
 from pipecat.turns.user_turn_strategies import UserTurnStrategies
 
 from db import end_call, insert_call, insert_message
+
+# Suppress pipecat's verbose "Generating chat from context [full system prompt...]" dump.
+# LLM errors still surface via exception propagation in the async pipeline.
+logger.disable("pipecat.services.openai.base_llm")
 from services.llm import SYSTEM_PROMPT, create_llm
 from services.stt import create_stt
 from services.tts import create_tts
@@ -83,6 +94,27 @@ class IdleDetector(FrameProcessor):
                 pass
             self._timer = None
         await super().cleanup()
+
+
+class BotResponseLogger(FrameProcessor):
+    """Logs the bot's complete LLM response as one clean line instead of the full context dump."""
+
+    def __init__(self):
+        super().__init__()
+        self._buf = ""
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+        if isinstance(frame, LLMTextFrame):
+            self._buf += frame.text
+        elif isinstance(frame, LLMFullResponseEndFrame):
+            if self._buf:
+                logger.info(f"Agent: {self._buf.strip()}")
+                self._buf = ""
+        elif isinstance(frame, TTSSpeakFrame):
+            # welcome/idle messages queued via task.queue_frames
+            logger.info(f"Agent: {frame.text}")
+        await self.push_frame(frame, direction)
 
 
 class TranscriptLogger(FrameProcessor):
@@ -154,18 +186,20 @@ async def run_bot(websocket, stream_sid: str, call_sid: str):
     # task=None here; assigned after PipelineTask is created to avoid circular dep
     idle = IdleDetector(None)
     transcript_logger = TranscriptLogger(None, call_sid)
+    bot_response_logger = BotResponseLogger()
 
     task = PipelineTask(
         Pipeline([
             transport.input(),
             stt,
-            idle,             # silence watchdog before LLM aggregation
+            idle,                  # silence watchdog before LLM aggregation
             transcript_logger,
-            pair.user(),      # buffers user speech into LLM context
+            pair.user(),           # buffers user speech into LLM context
             llm,
+            bot_response_logger,   # logs "Agent: ..." cleanly (replaces context dump)
             tts,
             transport.output(),
-            pair.assistant(), # captures LLM reply into context for next turn
+            pair.assistant(),      # captures LLM reply into context for next turn
         ]),
         params=PipelineParams(allow_interruptions=True),
     )
