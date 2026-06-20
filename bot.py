@@ -1,16 +1,9 @@
-"""Module for handling the AI Voice Agent bot logic using Pipecat."""
-
 import asyncio
 import os
 
 from loguru import logger
 from pipecat.audio.vad.silero import SileroVADAnalyzer
-from pipecat.frames.frames import (
-    EndFrame,
-    Frame,
-    TranscriptionFrame,
-    TTSSpeakFrame,
-)
+from pipecat.frames.frames import EndFrame, Frame, TranscriptionFrame, TTSSpeakFrame
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
@@ -31,6 +24,7 @@ from services.llm import SYSTEM_PROMPT, create_llm
 from services.stt import create_stt
 from services.tts import create_tts
 
+# English + Telugu phrases that signal the caller wants to end
 END_SIGNALS = [
     "bye", "goodbye", "ok bye", "thank you", "thanks",
     "థాంక్యూ", "అయిపోయింది", "చాలు",
@@ -40,15 +34,11 @@ WELCOME_MSG = (
     "నమస్కారం, SecureLife Insurance కి స్వాగతం. "
     "మీకు ఏ విషయంలో సహాయం కావాలి?"
 )
-IDLE_WARN_MSG = "అక్కడ ఉన్నారా?"
 IDLE_BYE_MSG = "సరే, తర్వాత మాట్లాడదాం. Bye!"
 
 
 class IdleDetector(FrameProcessor):
-    """
-    Resets on any user transcript.
-    Warns after 5s silence, hangs up after 10s more.
-    """
+    """Hangs up after 15s of silence. Timer resets on every user transcript."""
 
     def __init__(self, task: PipelineTask | None = None):
         super().__init__()
@@ -56,11 +46,9 @@ class IdleDetector(FrameProcessor):
         self._timer: asyncio.Task | None = None
 
     def set_task(self, task: PipelineTask):
-        """Sets the pipeline task."""
         self._task = task
 
     def start(self):
-        """Starts the idle detector timer."""
         self._reset()
 
     def _reset(self):
@@ -70,19 +58,15 @@ class IdleDetector(FrameProcessor):
 
     async def _loop(self):
         try:
-            await asyncio.sleep(5)
-            await self._task.queue_frames([TTSSpeakFrame(IDLE_WARN_MSG)])
-            await asyncio.sleep(10)
-            await self._task.queue_frames(
-                [TTSSpeakFrame(IDLE_BYE_MSG), EndFrame()]
-            )
+            await asyncio.sleep(15)
+            await self._task.queue_frames([TTSSpeakFrame(IDLE_BYE_MSG), EndFrame()])
         except asyncio.CancelledError:
             pass
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
         if isinstance(frame, TranscriptionFrame):
-            self._reset()
+            self._reset()  # user spoke — restart silence timer
         await self.push_frame(frame, direction)
 
     async def cleanup(self):
@@ -92,7 +76,7 @@ class IdleDetector(FrameProcessor):
 
 
 class TranscriptLogger(FrameProcessor):
-    """Logs user transcripts to DB and detects end-call signals."""
+    """Writes every user utterance to DB and triggers end-call on goodbye phrases."""
 
     def __init__(self, task: PipelineTask | None, call_sid: str):
         super().__init__()
@@ -100,7 +84,6 @@ class TranscriptLogger(FrameProcessor):
         self._call_sid = call_sid
 
     def set_task(self, task: PipelineTask):
-        """Sets the pipeline task."""
         self._task = task
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
@@ -111,15 +94,16 @@ class TranscriptLogger(FrameProcessor):
             asyncio.create_task(insert_message(self._call_sid, "user", text))
             if any(s in text.lower() for s in END_SIGNALS):
                 asyncio.create_task(end_call(self._call_sid))
+                # Small delay so TTS can finish the farewell before disconnect
                 asyncio.create_task(_delayed_end(self._task, secs=4))
         await self.push_frame(frame, direction)
 
 
 async def run_bot(websocket, stream_sid: str, call_sid: str):
-    """Runs the main bot pipeline for the active call."""
-    # pylint: disable=too-many-locals
+    """Wire up and run the STT → LLM → TTS pipeline for one call."""
     await insert_call(call_sid, stream_sid)
 
+    # Twilio sends/receives MULAW 8kHz audio; TwilioFrameSerializer handles encoding
     transport = FastAPIWebsocketTransport(
         websocket=websocket,
         params=FastAPIWebsocketParams(
@@ -138,28 +122,28 @@ async def run_bot(websocket, stream_sid: str, call_sid: str):
     llm = create_llm()
     tts = create_tts()
 
-    context = LLMContext(
-        messages=[{"role": "system", "content": SYSTEM_PROMPT}]
-    )
+    context = LLMContext(messages=[{"role": "system", "content": SYSTEM_PROMPT}])
+    # VAD lives in user_params so Silero gates when the LLM starts listening
     pair = LLMContextAggregatorPair(
         context,
         user_params=LLMUserAggregatorParams(vad_analyzer=SileroVADAnalyzer()),
     )
 
-    idle = IdleDetector(None)  # task assigned below
+    # task=None here; assigned after PipelineTask is created to avoid circular dep
+    idle = IdleDetector(None)
     transcript_logger = TranscriptLogger(None, call_sid)
 
     task = PipelineTask(
         Pipeline([
             transport.input(),
             stt,
-            idle,
+            idle,             # silence watchdog before LLM aggregation
             transcript_logger,
-            pair.user(),
+            pair.user(),      # buffers user speech into LLM context
             llm,
             tts,
             transport.output(),
-            pair.assistant(),
+            pair.assistant(), # captures LLM reply into context for next turn
         ]),
         params=PipelineParams(allow_interruptions=True),
     )
@@ -173,12 +157,13 @@ async def run_bot(websocket, stream_sid: str, call_sid: str):
         idle.start()
         await task.queue_frames([TTSSpeakFrame(WELCOME_MSG)])
 
-    # Max call duration
     max_min = int(os.getenv("MAX_CALL_MINUTES", "3"))
 
     async def duration_guard():
+        """Ends the call after MAX_CALL_MINUTES regardless of conversation state."""
         await asyncio.sleep(max_min * 60)
         logger.info(f"Max duration {max_min}min reached")
+        # Inject a system nudge so the LLM gives a natural farewell, not a cut-off
         context.messages.append({
             "role": "system",
             "content": (
@@ -197,5 +182,6 @@ async def run_bot(websocket, stream_sid: str, call_sid: str):
 
 
 async def _delayed_end(task: PipelineTask, secs: float):
+    """Queues EndFrame after a short delay so TTS audio finishes before disconnect."""
     await asyncio.sleep(secs)
     await task.queue_frames([EndFrame()])

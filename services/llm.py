@@ -1,9 +1,8 @@
-"""Module for providing LLM service creation and configuration."""
-
 import os
 
 from pipecat.services.openai.llm import OpenAILLMService
 
+# Full persona + domain rules. Numbers must be spelled in Telugu words — TTS cannot read digits or ₹.
 SYSTEM_PROMPT = (
     "You are Kavitha, a voice agent at SecureLife Insurance — an Indian "
     "insurance company serving Telugu-speaking customers across Andhra "
@@ -88,8 +87,7 @@ SYSTEM_PROMPT = (
 def create_llm() -> OpenAILLMService:
     """Creates and configures the LLM service for the bot."""
     return OpenAILLMService(
-        api_key=os.getenv("OPENAI_API_KEY"),
+        api_key=os.getenv("AI_GATEWAY_API_KEY"),
         model="gpt-4.1-mini",
-        # For Vercel AI Gateway: add
-        # base_url="https://gateway.ai.vercel.app/v1/TEAM/PROJECT/openai"
+        base_url="https://ai-gateway.vercel.sh/v1"
     )

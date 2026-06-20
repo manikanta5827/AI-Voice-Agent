@@ -12,7 +12,6 @@ from bot import run_bot
 
 load_dotenv()
 
-
 app = FastAPI()
 
 
@@ -23,6 +22,7 @@ async def root():
 
 @app.get("/make-call")
 async def make_call():
+    """Outbound call: dials MY_INDIAN_NUMBER and connects it to the bot."""
     client = Client(
         os.getenv("TWILIO_ACCOUNT_SID"),
         os.getenv("TWILIO_AUTH_TOKEN"),
@@ -37,6 +37,7 @@ async def make_call():
 
 @app.post("/incoming-call")
 async def incoming_call():
+    """Twilio webhook — returns TwiML that upgrades the call to a media stream."""
     response = VoiceResponse()
     connect = Connect()
     connect.stream(url=f"wss://{os.getenv('PUBLIC_URL')}/media-stream")
@@ -46,9 +47,11 @@ async def incoming_call():
 
 @app.websocket("/media-stream")
 async def media_stream(websocket: WebSocket):
+    """Receives Twilio audio frames and hands off to the Pipecat pipeline."""
     await websocket.accept()
 
-    # Consume Twilio's "connected" + "start" handshake to get stream/call SIDs
+    # Twilio sends a "connected" event then a "start" event before any audio;
+    # we must consume them to get the stream/call SIDs needed by the bot
     stream_sid = ""
     call_sid = ""
     async for raw in websocket.iter_text():
@@ -59,7 +62,7 @@ async def media_stream(websocket: WebSocket):
             break
 
     if not stream_sid:
-        return
+        return  # malformed handshake — nothing to run
 
     await run_bot(websocket, stream_sid, call_sid)
 
