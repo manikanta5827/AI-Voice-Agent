@@ -8,7 +8,6 @@ from pipecat.frames.frames import (
     Frame,
     LLMFullResponseEndFrame,
     LLMTextFrame,
-    OutputAudioRawFrame,
     TranscriptionFrame,
     TTSSpeakFrame,
 )
@@ -40,7 +39,6 @@ logger.disable("pipecat.services.openai.base_llm")
 from services.llm import SYSTEM_PROMPT, create_llm
 from services.stt import create_stt
 from services.tts import create_tts
-from services.welcome import get_welcome_audio
 
 # English + Telugu phrases that signal the caller wants to end
 END_SIGNALS = [
@@ -49,7 +47,7 @@ END_SIGNALS = [
 ]
 
 WELCOME_MSG = (
-    "నమస్కారం, SecureLife Insurance నుంచి Kavitha మాట్లాడుతున్నా. "
+    "నమస్కారం, SecureLife Insurance నుంచి raghu మాట్లాడుతున్నా. "
     "ఏం help కావాలో చెప్పండి."
 )
 IDLE_BYE_MSG = "సరే, తర్వాత మాట్లాడదాం. Bye!"
@@ -214,18 +212,7 @@ async def run_bot(websocket, stream_sid: str, call_sid: str):
         logger.info("Twilio connected — playing welcome")
         idle.start()
         context.messages.append({"role": "assistant", "content": WELCOME_MSG})
-        audio = await get_welcome_audio(WELCOME_MSG)
-        # Inject PCM audio via tts.push_frame() — bypasses STT (task.queue_frames injects at
-        # pipeline source and flows through STT, causing errors). tts sits after STT/LLM,
-        # so frames flow directly to transport.output() → Twilio, no TTS round-trip needed.
-        chunk_size = 320  # 20ms at 8kHz 16-bit PCM (8000 × 0.02 × 2 bytes)
-        for i in range(0, len(audio), chunk_size):
-            chunk = audio[i : i + chunk_size]
-            if len(chunk) % 2 != 0:
-                chunk += b"\x00"  # pad last chunk to even bytes
-            await tts.push_frame(
-                OutputAudioRawFrame(audio=chunk, sample_rate=8000, num_channels=1)
-            )
+        await task.queue_frames([TTSSpeakFrame(WELCOME_MSG)])
 
     max_min = int(os.getenv("MAX_CALL_MINUTES", "3"))
 

@@ -120,7 +120,7 @@ bot.py             Pipecat pipeline — STT → LLM → TTS, idle/end-call logic
 services/
   stt.py           Soniox STT (Telugu, stt-rt-v5)
   tts.py           Cartesia TTS (Sonic-2, Bavani voice)
-  llm.py           OpenAI LLM + system prompt (Kavitha persona)
+  llm.py           OpenAI LLM + system prompt (raghu persona)
 db.py              Supabase PostgreSQL — call and message logging
 requirements.txt
 .env.example
