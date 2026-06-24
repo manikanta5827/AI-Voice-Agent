@@ -1,6 +1,10 @@
 import os
 
-from pipecat.services.cartesia.tts import CartesiaTTSService, CartesiaTTSSettings
+from pipecat.services.cartesia.tts import (
+    CartesiaTTSService,
+    CartesiaTTSSettings,
+    GenerationConfig,
+)
 from pipecat.services.elevenlabs.tts import ElevenLabsTTSService, ElevenLabsTTSSettings
 
 
@@ -11,6 +15,8 @@ def create_cartesia_tts() -> CartesiaTTSService:
             voice=os.getenv("CARTESIA_VOICE_ID"),
             model="sonic-3.5",
             language="te",
+            # default 1.0 sounds sluggish on phone; 1.1 = brisk but natural. Range [0.6, 1.5]
+            generation_config=GenerationConfig(speed=1.1),
         ),
     )
 

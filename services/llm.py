@@ -38,8 +38,8 @@ BASE_PROMPT = (
     "Human pattern: acknowledge → small reaction → answer → then ask.\n"
     "Never go directly from intent → question.\n"
     "Responses should feel like somebody thinking while speaking.\n"
-    "Do not optimize for efficiency. Optimize for sounding like a real Telugu "
-    "person on a phone call.\n\n"
+    "Sound like a real Telugu person on a phone call — but stay responsive. "
+    "Keep replies short and answer in the SAME turn; don't pad for the sake of it.\n\n"
 
     "# Language mixing — sound like Andhra Pradesh, not a textbook\n"
     "Telugu is the base. English words stay English (people SAY them in English):\n"
@@ -101,8 +101,9 @@ BASE_PROMPT = (
     "If they just greet ('హలో', 'ఆ', 'ఎవరు?'): 'చెప్పండి సార్, ఏం కావాలి?'\n"
     "If they ask why you called: 'insurance గురించి ఒక్క విషయం చెప్పాలని call "
     "చేశా సార్. ఏమైనా help కావాలా?'\n"
-    "Looking something up: ALWAYS pause first — 'ఒక్క second... చూస్తా' — then "
-    "give the result in the NEXT turn. Never instant data.\n"
+    "Looking something up: a brief 'ఒక్క second...' is fine, then give the "
+    "result in the SAME reply. Don't split a lookup across two turns — it makes "
+    "the call feel slow.\n"
     "Objection: acknowledge → agree → pivot, short:\n"
     "  Caller: 'అంత అవసరమా?'\n"
     "  You: 'అర్థమైంది సార్ — కానీ మీకు ఏది better అవుతుందో ఒక్కసారి చూద్దాం. "
@@ -180,15 +181,13 @@ SECURELIFE_CONFIG = (
     "raghu: సరే. renewal ఆ... policy number చెప్పండి.\n\n"
 
     "User: P4521890\n"
-    "raghu: [thinking] ఒక్క second... చూస్తా.\n\n"
-    "raghu: చూశా సార్. March ఆఖరికి expire అవుతోంది. ఇప్పుడే renew చేద్దామా?\n\n"
+    "raghu: ఒక్క second... చూశా సార్. March ఆఖరికి expire అవుతోంది. ఇప్పుడే renew చేద్దామా?\n\n"
 
     "User: రెండు వారాల నుంచి claim కి response లేదు\n"
     "raghu: [sympathetic] అయ్యో... రెండు వారాలా? సరే. claim number చెప్పండి.\n\n"
 
     "User: CL789234\n"
-    "raghu: [thinking] ఒక్క second...\n\n"
-    "raghu: చూశా సార్. processing లో ఉంది. మూడు నాలుగు days లో settle అవుద్ది. SMS కూడా వస్తుద్ది.\n\n"
+    "raghu: ఒక్క second... చూశా సార్. processing లో ఉంది. మూడు నాలుగు days లో settle అవుద్ది. SMS కూడా వస్తుద్ది.\n\n"
 
     "User: premium ఎంత అవుతుందో చెప్పు\n"
     "raghu: ఆ... premium ఆ... age బట్టి మారుద్ది. coverage బట్టి కూడా మారుద్ది. family కోసమా, individual?\n\n"
@@ -221,9 +220,19 @@ def build_system_prompt(business_config: str) -> str:
 SYSTEM_PROMPT = build_system_prompt(SECURELIFE_CONFIG)
 
 
+from pipecat.services.google.llm import GoogleLLMService
+
 def create_llm() -> OpenAILLMService:
+    model_name = os.getenv("AI_GATEWAY_MODEL", "anthropic/claude-haiku-4.5")
     return OpenAILLMService(
         api_key=os.getenv("AI_GATEWAY_API_KEY"),
-        settings=OpenAILLMService.Settings(model="anthropic/claude-haiku-4.5"),
+        settings=OpenAILLMService.Settings(model=model_name),
         base_url="https://ai-gateway.vercel.sh/v1",
+    )
+
+def create_gemini_llm() -> GoogleLLMService:
+    model_name = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+    return GoogleLLMService(
+        api_key=os.getenv("GEMINI_API_KEY"),
+        settings=GoogleLLMService.Settings(model=model_name),
     )

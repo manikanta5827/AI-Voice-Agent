@@ -1,5 +1,6 @@
 import asyncio
 import os
+import re
 
 from loguru import logger
 from pipecat.audio.vad.silero import SileroVADAnalyzer
@@ -36,6 +37,8 @@ from db import end_call, insert_call, insert_message
 # Suppress pipecat's verbose "Generating chat from context [full system prompt...]" dump.
 # LLM errors still surface via exception propagation in the async pipeline.
 logger.disable("pipecat.services.openai.base_llm")
+logger.disable("pipecat.services.google.llm")
+logger.disable("pipecat.services.anthropic.llm")
 from services.llm import SYSTEM_PROMPT, create_llm
 from services.stt import create_stt
 from services.tts import create_tts
@@ -94,6 +97,35 @@ class IdleDetector(FrameProcessor):
                 pass
             self._timer = None
         await super().cleanup()
+
+
+class MarkerStripper(FrameProcessor):
+    """Removes [thinking], [sympathetic], etc. emotion markers from LLM text before TTS.
+
+    Cartesia/ElevenLabs don't parse [...] tags — they'd read them aloud ("thinking"),
+    which is exactly the robotic artifact we're killing. Buffers a partial '[...'
+    that spans token-stream frames so a marker split across chunks is still caught.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self._pending = ""  # holds an unclosed '[...' carried to the next frame
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+        if isinstance(frame, LLMTextFrame):
+            text = re.sub(r"\[[^\]]*\]", "", self._pending + frame.text)
+            self._pending = ""
+            idx = text.rfind("[")  # unclosed bracket → hold it for the next chunk
+            if idx != -1:
+                self._pending, text = text[idx:], text[:idx]
+            if text:
+                await self.push_frame(LLMTextFrame(text), direction)
+            return
+        if isinstance(frame, LLMFullResponseEndFrame) and self._pending:
+            await self.push_frame(LLMTextFrame(self._pending), direction)  # flush stray '['
+            self._pending = ""
+        await self.push_frame(frame, direction)
 
 
 class BotResponseLogger(FrameProcessor):
@@ -161,7 +193,20 @@ async def run_bot(websocket, stream_sid: str, call_sid: str):
     )
 
     stt = create_stt()
-    llm = create_llm()
+    
+    llm_provider = os.getenv("LLM_PROVIDER", "ai_gateway")
+    if llm_provider == "huggingface":
+        from services.hugging_llm import create_huggingface_llm
+        llm = create_huggingface_llm()
+        logger.info("Using Hugging Face LLM (Navarasa)")
+    elif llm_provider == "gemini":
+        from services.llm import create_gemini_llm
+        llm = create_gemini_llm()
+        logger.info("Using native Google Gemini API")
+    else:
+        llm = create_llm()
+        logger.info("Using default AI Gateway LLM")
+
     tts = create_tts()
 
     context = LLMContext(messages=[{"role": "system", "content": SYSTEM_PROMPT}])
@@ -177,7 +222,7 @@ async def run_bot(websocket, stream_sid: str, call_sid: str):
             vad_analyzer=SileroVADAnalyzer(),
             user_turn_strategies=UserTurnStrategies(
                 start=[VADUserTurnStartStrategy()],
-                stop=[SpeechTimeoutUserTurnStopStrategy(user_speech_timeout=0.8)],
+                stop=[SpeechTimeoutUserTurnStopStrategy(user_speech_timeout=0.4)],
             ),
             user_turn_stop_timeout=2.0,
         ),
@@ -186,6 +231,7 @@ async def run_bot(websocket, stream_sid: str, call_sid: str):
     # task=None here; assigned after PipelineTask is created to avoid circular dep
     idle = IdleDetector(None)
     transcript_logger = TranscriptLogger(None, call_sid)
+    marker_stripper = MarkerStripper()
     bot_response_logger = BotResponseLogger()
 
     task = PipelineTask(
@@ -196,6 +242,7 @@ async def run_bot(websocket, stream_sid: str, call_sid: str):
             transcript_logger,
             pair.user(),           # buffers user speech into LLM context
             llm,
+            marker_stripper,       # strip [thinking]/[sympathetic] tags before they're spoken
             bot_response_logger,   # logs "Agent: ..." cleanly (replaces context dump)
             tts,
             transport.output(),
