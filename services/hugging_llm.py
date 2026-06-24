@@ -37,7 +37,7 @@ class HuggingFaceLLMService(LLMService):
                     elif msg["role"] == "user":
                         history.append(f"User: {msg['content']}")
                     elif msg["role"] == "assistant":
-                        history.append(f"raghu: {msg['content']}")
+                        history.append(f"priya: {msg['content']}")
                 
                 user_msg = "\n".join(history)
                 prompt = f"### Instruction:\n{system_prompt.strip()}\n\n### Input:\n{user_msg.strip()}\n\n### Response:\n"

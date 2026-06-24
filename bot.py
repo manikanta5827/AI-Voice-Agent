@@ -10,6 +10,7 @@ from pipecat.frames.frames import (
     LLMFullResponseEndFrame,
     LLMTextFrame,
     TranscriptionFrame,
+    TTSAudioRawFrame,
     TTSSpeakFrame,
 )
 from pipecat.pipeline.pipeline import Pipeline
@@ -42,6 +43,7 @@ logger.disable("pipecat.services.anthropic.llm")
 from services.llm import SYSTEM_PROMPT, create_llm
 from services.stt import create_stt
 from services.tts import create_tts
+from services.welcome import get_welcome_audio
 
 # English + Telugu phrases that signal the caller wants to end
 END_SIGNALS = [
@@ -256,10 +258,19 @@ async def run_bot(websocket, stream_sid: str, call_sid: str):
 
     @transport.event_handler("on_client_connected")
     async def on_connected(_transport, _client):
-        logger.info("Twilio connected — playing welcome")
+        logger.info("Twilio connected — playing cached welcome")
         idle.start()
         context.messages.append({"role": "assistant", "content": WELCOME_MSG})
-        await task.queue_frames([TTSSpeakFrame(WELCOME_MSG)])
+        # Play PRE-RENDERED welcome audio (assets/welcome_*.pcm), not live TTS.
+        # Live TTSSpeakFrame meant a 5-7s cold Cartesia WS connect + synthesis before
+        # any sound — during which the caller said "hello?" into silence, triggering an
+        # LLM reply that overlapped the late-arriving welcome. Cached bytes play
+        # instantly; TTSAudioRawFrame sets bot-speaking state so a caller talking over
+        # it interrupts cleanly (Twilio buffer flushed). 8kHz mono PCM matches Twilio.
+        audio = await get_welcome_audio(WELCOME_MSG)
+        await task.queue_frames([
+            TTSAudioRawFrame(audio=audio, sample_rate=8000, num_channels=1)
+        ])
 
     max_min = int(os.getenv("MAX_CALL_MINUTES", "3"))
 
