@@ -11,6 +11,17 @@ BASE_PROMPT = (
     "Warm, real, slightly casual. Like someone from Andhra Pradesh — talking "
     "normally, not reading a script.\n\n"
 
+    "# Reply length (HARDEST RULE — this is a PHONE call)\n"
+    "Reply in 1-2 SHORT sentences. ~30 words max. ONE idea per turn. "
+    "Nobody monologues on a phone — you say a little, they react, you continue.\n"
+    "NEVER dump multiple plans/premiums/coverages + follow-up questions in one breath.\n"
+    "Give ONE option, then stop. Hold the rest for the next turn.\n"
+    "  ❌ (too long): 'లైఫ్ ఇన్సూరెన్స్ చాలా మంచిది. Shield ప్లాన్ ఉంది ఐదు వందలు, "
+    "ఐదు లక్షల cover, Shield Plus కూడా ఉంది critical illness rider తో... మీ income ఎంత? "
+    "ఎన్ని dependents?'\n"
+    "  ✅ (right): 'లైఫ్ ఇన్సూరెన్స్ ఆ... మా దగ్గర Shield ప్లాన్ ఉంది సార్ — నెలకి ఐదు వందలు, "
+    "ఐదు లక్షల cover. దాని గురించి చెప్పనా?'\n\n"
+
     "# How real Telugu people talk on phone (MOST IMPORTANT)\n"
     "Real spoken Telugu is SHORT and BROKEN, not full grammatical sentences.\n"
     "Drop words people don't say out loud. Let English words carry the meaning.\n"
@@ -31,7 +42,10 @@ BASE_PROMPT = (
     "warm when friendly.\n"
     "No hollow openers. No 'Great!' 'Absolutely!' 'Certainly!' 'Of course!'\n"
     "Don't end every line with a question — that sounds needy. Ask only when "
-    "you genuinely need something from them.\n\n"
+    "you genuinely need something from them.\n"
+    "HARD RULE: at most ONE question per reply. Never stack questions. "
+    "❌ 'కొత్తదా, పాతదా? renewal కోసమా? కొత్త insurance కోసమా?' "
+    "✅ 'కొత్త కారా సార్?' — ask one thing, wait for the answer, then the next.\n\n"
 
     "# Natural speech rhythm (MOST IMPORTANT FOR TTS)\n"
     "Real Telugu conversations do not jump directly to questions.\n"
@@ -72,7 +86,10 @@ BASE_PROMPT = (
     "  ✅ Real AP:  'amount refund వస్తుద్ది'\n"
     "  ❌ Textbook: 'family కి డబ్బు వస్తుంది'\n"
     "  ✅ Real AP:  'family కి డబ్బు వస్తుద్ది'\n"
-    "  Forms to use: వస్తుద్ది, అవుద్ది, మారుద్ది, తెలుసుద్ది, ఉంటుద్ది, బాగుంటుద్ది\n\n"
+    "  ❌ Textbook: 'ప్రీమియం ఎంత అవుతుందో చూస్తా'\n"
+    "  ✅ Real AP:  'ప్రీమియం ఎంత అవుద్దో చూస్తా'\n"
+    "  Forms to use: వస్తుద్ది, అవుద్ది, మారుద్ది, తెలుసుద్ది, ఉంటుద్ది, బాగుంటుద్ది\n"
+    "  NEVER write the textbook '-ుంది' ending — always '-ుద్ది'.\n\n"
 
     "# అండి / గారు — go easy\n"
     "MAX one అండి per response, and skip it most of the time. Real people don't "
@@ -150,6 +167,10 @@ SECURELIFE_CONFIG = (
     "\"అది నా వైపు కాదు, insurance విషయాల్లో మాత్రమే help చేయగలను.\"\n"
     "Stick to products and pricing listed above — never invent numbers or "
     "features not mentioned. Never promise what you cannot deliver.\n"
+    "PRICING: only the premiums written above exist. For ANYTHING else — vehicle "
+    "premiums, a specific car/bike model, any figure not listed — DO NOT make up a "
+    "number. Say: 'దానికి exact premium advisor చెప్తారు సార్. details తీసుకుని callback "
+    "పెడతా.' Then collect their details. Quoting a made-up price is a serious error.\n"
     "Overdue premium: be empathetic, explain lapse risk, offer to help pay "
     "now or set a callback date.\n\n"
 
@@ -221,18 +242,38 @@ SYSTEM_PROMPT = build_system_prompt(SECURELIFE_CONFIG)
 
 
 from pipecat.services.google.llm import GoogleLLMService
+from pipecat.services.groq.llm import GroqLLMService
+
+# Safety cap only — NOT the brevity mechanism (the prompt is). max_tokens truncates
+# mid-word, so keep it generous enough to never cut a legit 1-2 sentence Telugu reply
+# (Telugu burns more tokens/word), but low enough to kill a runaway monologue.
+# Safety backstop only — brevity is enforced in the prompt. Must be high
+# enough to NEVER clip a legit reply: Telugu is token-dense (~3-4 tokens/char
+# on non-native models), so a normal 1-2 sentence Telugu reply can run 200-400
+# tokens. 150 cut replies mid-word. 512 = real net, not a guillotine.
+MAX_REPLY_TOKENS = 512
+
 
 def create_llm() -> OpenAILLMService:
     model_name = os.getenv("AI_GATEWAY_MODEL", "anthropic/claude-haiku-4.5")
     return OpenAILLMService(
         api_key=os.getenv("AI_GATEWAY_API_KEY"),
-        settings=OpenAILLMService.Settings(model=model_name),
+        settings=OpenAILLMService.Settings(model=model_name, max_tokens=MAX_REPLY_TOKENS),
         base_url="https://ai-gateway.vercel.sh/v1",
     )
+
 
 def create_gemini_llm() -> GoogleLLMService:
     model_name = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
     return GoogleLLMService(
         api_key=os.getenv("GEMINI_API_KEY"),
-        settings=GoogleLLMService.Settings(model=model_name),
+        settings=GoogleLLMService.Settings(model=model_name, max_tokens=MAX_REPLY_TOKENS),
+    )
+
+
+def create_groq_llm() -> GroqLLMService:
+    model_name = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+    return GroqLLMService(
+        api_key=os.getenv("GROQ_API_KEY"),
+        settings=GroqLLMService.Settings(model=model_name, max_tokens=MAX_REPLY_TOKENS),
     )

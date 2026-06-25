@@ -1,12 +1,16 @@
 import asyncio
 import os
 import re
+import time
 
 from loguru import logger
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.frames.frames import (
+    BotStartedSpeakingFrame,
+    BotStoppedSpeakingFrame,
     EndFrame,
     Frame,
+    InterimTranscriptionFrame,
     LLMFullResponseEndFrame,
     LLMTextFrame,
     TranscriptionFrame,
@@ -52,14 +56,15 @@ END_SIGNALS = [
 ]
 
 WELCOME_MSG = (
-    "నమస్కారం, SecureLife Insurance నుంచి raghu మాట్లాడుతున్నా. "
+    "నమస్కారం, SecureLife Insurance నుంచి priya మాట్లాడుతున్నా. "
     "ఏం help కావాలో చెప్పండి."
 )
 IDLE_BYE_MSG = "సరే, తర్వాత మాట్లాడదాం. Bye!"
 
 
 class IdleDetector(FrameProcessor):
-    """Hangs up after 15s of silence. Timer resets on every user transcript."""
+    """Hangs up after 45s of true silence. Timer resets on every user transcript
+    AND whenever the bot speaks — so it can't fire mid-turn or right after a reply."""
 
     def __init__(self, task: PipelineTask | None = None):
         super().__init__()
@@ -86,8 +91,9 @@ class IdleDetector(FrameProcessor):
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
-        if isinstance(frame, TranscriptionFrame):
-            self._reset()  # user spoke — restart silence timer
+        # Reset on real user speech OR bot speech — never count an active turn as idle
+        if isinstance(frame, (TranscriptionFrame, BotStartedSpeakingFrame)):
+            self._reset()
         await self.push_frame(frame, direction)
 
     async def cleanup(self):
@@ -101,17 +107,68 @@ class IdleDetector(FrameProcessor):
         await super().cleanup()
 
 
-class MarkerStripper(FrameProcessor):
-    """Removes [thinking], [sympathetic], etc. emotion markers from LLM text before TTS.
+class EchoGate(FrameProcessor):
+    """Drops STT transcripts that arrive while (and just after) the bot is speaking.
 
-    Cartesia/ElevenLabs don't parse [...] tags — they'd read them aloud ("thinking"),
-    which is exactly the robotic artifact we're killing. Buffers a partial '[...'
-    that spans token-stream frames so a marker split across chunks is still caught.
+    On phone calls the caller's handset echoes the bot's own audio back into the
+    line; STT then transcribes the bot's greeting/replies as if the caller said
+    them, polluting the LLM context (see the welcome showing up as `User:` in logs).
+    VAD-based turn interruption is unaffected — it's not transcript-driven, so the
+    caller can still cut the bot off. 0.4s tail covers echo lingering after bot stops.
     """
+
+    _TAIL = 0.4
 
     def __init__(self):
         super().__init__()
-        self._pending = ""  # holds an unclosed '[...' carried to the next frame
+        self._bot_speaking = False
+        self._unmute_at = 0.0
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+        if isinstance(frame, BotStartedSpeakingFrame):
+            self._bot_speaking = True
+        elif isinstance(frame, BotStoppedSpeakingFrame):
+            self._bot_speaking = False
+            self._unmute_at = time.monotonic() + self._TAIL
+        elif isinstance(frame, (TranscriptionFrame, InterimTranscriptionFrame)):
+            if self._bot_speaking or time.monotonic() < self._unmute_at:
+                logger.debug("EchoGate: dropped transcript during bot speech")
+                return  # swallow the echo
+        await self.push_frame(frame, direction)
+
+
+class MarkerStripper(FrameProcessor):
+    """Cleans LLM text before TTS: strips [emotion] markers, fixes script spacing.
+
+    1. [thinking]/[sympathetic] etc. — Cartesia/ElevenLabs read them aloud, so remove.
+       Buffers a partial '[...' spanning token-stream frames so split markers are caught.
+    2. Telugu glued to English with no space ('దీనికిcomprehensive') makes TTS
+       mispronounce = robotic. Insert a space at Telugu<->Latin transitions, including
+       across frame boundaries (tracks the last char emitted).
+    """
+
+    # Telugu Unicode block <-> Latin letters, in both orders
+    _TE_LAT = re.compile(r"([ఀ-౿])([A-Za-z])")
+    _LAT_TE = re.compile(r"([A-Za-z])([ఀ-౿])")
+
+    @staticmethod
+    def _is_te(c: str) -> bool:
+        return "ఀ" <= c <= "౿"
+
+    @staticmethod
+    def _is_lat(c: str) -> bool:
+        return c.isascii() and c.isalpha()
+
+    def __init__(self):
+        super().__init__()
+        self._pending = ""    # holds an unclosed '[...' carried to the next frame
+        self._last_char = ""  # last char pushed, to fix space across frame boundaries
+
+    def _space(self, text: str) -> str:
+        text = self._TE_LAT.sub(r"\1 \2", text)
+        text = self._LAT_TE.sub(r"\1 \2", text)
+        return text
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
@@ -122,11 +179,21 @@ class MarkerStripper(FrameProcessor):
             if idx != -1:
                 self._pending, text = text[idx:], text[:idx]
             if text:
+                text = self._space(text)
+                # fix a script transition split across frames (last char ↔ first char)
+                if self._last_char and (
+                    (self._is_te(self._last_char) and self._is_lat(text[0]))
+                    or (self._is_lat(self._last_char) and self._is_te(text[0]))
+                ):
+                    text = " " + text
+                self._last_char = text[-1]
                 await self.push_frame(LLMTextFrame(text), direction)
             return
-        if isinstance(frame, LLMFullResponseEndFrame) and self._pending:
-            await self.push_frame(LLMTextFrame(self._pending), direction)  # flush stray '['
-            self._pending = ""
+        if isinstance(frame, LLMFullResponseEndFrame):
+            self._last_char = ""  # reset between responses
+            if self._pending:
+                await self.push_frame(LLMTextFrame(self._pending), direction)  # flush stray '['
+                self._pending = ""
         await self.push_frame(frame, direction)
 
 
@@ -205,6 +272,10 @@ async def run_bot(websocket, stream_sid: str, call_sid: str):
         from services.llm import create_gemini_llm
         llm = create_gemini_llm()
         logger.info("Using native Google Gemini API")
+    elif llm_provider == "groq":
+        from services.llm import create_groq_llm
+        llm = create_groq_llm()
+        logger.info("Using Groq LLM API")
     else:
         llm = create_llm()
         logger.info("Using default AI Gateway LLM")
@@ -231,6 +302,7 @@ async def run_bot(websocket, stream_sid: str, call_sid: str):
     )
 
     # task=None here; assigned after PipelineTask is created to avoid circular dep
+    echo_gate = EchoGate()
     idle = IdleDetector(None)
     transcript_logger = TranscriptLogger(None, call_sid)
     marker_stripper = MarkerStripper()
@@ -240,6 +312,7 @@ async def run_bot(websocket, stream_sid: str, call_sid: str):
         Pipeline([
             transport.input(),
             stt,
+            echo_gate,             # drop self-transcribed echo while bot speaks
             idle,                  # silence watchdog before LLM aggregation
             transcript_logger,
             pair.user(),           # buffers user speech into LLM context

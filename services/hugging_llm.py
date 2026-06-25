@@ -45,7 +45,7 @@ class HuggingFaceLLMService(LLMService):
                 payload = {
                     "inputs": prompt,
                     "parameters": {
-                        "max_new_tokens": 250,
+                        "max_new_tokens": 512,  # safety net; brevity enforced in prompt. Telugu is token-dense; 150 clipped mid-word.
                         "temperature": 0.7,
                         "return_full_text": False
                     }
