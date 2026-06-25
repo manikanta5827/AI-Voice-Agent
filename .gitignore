@@ -13,6 +13,7 @@ build/
 .env.*
 !.env.example
 
+bench/node_modules/
 # Logs
 *.log
 logs/

@@ -142,10 +142,39 @@ def create_llm() -> OpenAILLMService:
 
 
 def create_openai_llm() -> OpenAILLMService:
-    """Direct OpenAI inference (no gateway hop)."""
-    model_name = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
+    """Direct OpenAI inference (no gateway hop). Default model picked by benchmark:
+    best balance of low TTFT + native Telugu quality, non-reasoning (no thinking hop).
+    gpt-5* models reject `max_tokens` — use `max_completion_tokens` (works for 4.x too)."""
+    model_name = os.getenv("OPENAI_MODEL", "gpt-5.1-chat-latest")
     return OpenAILLMService(
         api_key=os.getenv("OPENAI_API_KEY"),
+        settings=OpenAILLMService.Settings(
+            model=model_name, max_completion_tokens=MAX_REPLY_TOKENS
+        ),
+    )
+
+
+def create_deepseek_llm() -> OpenAILLMService:
+    """DeepSeek via its OpenAI-compatible endpoint. thinking MUST be disabled —
+    default-on reasoning makes it ~5x slower (3.5s vs 0.96s TTFT in benchmark)."""
+    model_name = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash")
+    return OpenAILLMService(
+        api_key=os.getenv("DEEPSEEK_API_KEY"),
+        base_url="https://api.deepseek.com",
+        settings=OpenAILLMService.Settings(
+            model=model_name,
+            max_tokens=MAX_REPLY_TOKENS,
+            extra={"extra_body": {"thinking": {"type": "disabled"}}},
+        ),
+    )
+
+
+def create_sarvam_llm() -> OpenAILLMService:
+    """Sarvam via its OpenAI-compatible endpoint. Most native Telugu, but slower."""
+    model_name = os.getenv("SARVAM_MODEL", "sarvam-105b")
+    return OpenAILLMService(
+        api_key=os.getenv("SARVAM_API_KEY"),
+        base_url="https://api.sarvam.ai/v1",
         settings=OpenAILLMService.Settings(model=model_name, max_tokens=MAX_REPLY_TOKENS),
     )
 

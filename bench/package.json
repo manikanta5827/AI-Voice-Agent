@@ -1,0 +1,19 @@
+{
+  "name": "voice-agent-bench",
+  "private": true,
+  "type": "module",
+  "description": "LLM latency benchmarks (direct API / Vercel AI SDK BYOK / Vercel AI Gateway) for the Telugu voice agent.",
+  "scripts": {
+    "direct": "node direct.js",
+    "byok": "node vercel-byok.js",
+    "gateway": "node vercel-gateway.js"
+  },
+  "dependencies": {
+    "@ai-sdk/deepseek": "^1",
+    "@ai-sdk/google": "^2",
+    "@ai-sdk/groq": "^2.0.42",
+    "@ai-sdk/openai": "^2",
+    "@ai-sdk/openai-compatible": "^1",
+    "ai": "^5"
+  }
+}

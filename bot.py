@@ -278,6 +278,14 @@ async def run_bot(websocket, stream_sid: str, call_sid: str):
         from services.llm import create_groq_llm
         llm = create_groq_llm()
         logger.info("Using Groq LLM API")
+    elif llm_provider == "deepseek":
+        from services.llm import create_deepseek_llm
+        llm = create_deepseek_llm()
+        logger.info("Using DeepSeek API (thinking disabled)")
+    elif llm_provider == "sarvam":
+        from services.llm import create_sarvam_llm
+        llm = create_sarvam_llm()
+        logger.info("Using Sarvam API")
     else:
         llm = create_llm()
         logger.info("Using default AI Gateway LLM")
