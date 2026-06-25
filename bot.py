@@ -107,6 +107,25 @@ class IdleDetector(FrameProcessor):
         await super().cleanup()
 
 
+class HistoryCap(FrameProcessor):
+    """Keeps LLM context bounded to system message + last N messages, so prompt
+    prefill (and TTFT) doesn't grow unbounded over a long call. Trims in place
+    before the context reaches the LLM. The system message at [0] stays fixed, so
+    the cached prefix (DeepSeek/OpenAI prompt cache) keeps hitting."""
+
+    def __init__(self, context: LLMContext, max_messages: int):
+        super().__init__()
+        self._ctx = context
+        self._max = max_messages
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+        msgs = self._ctx.messages
+        if len(msgs) > self._max + 1:  # +1 keeps the system message at [0]
+            self._ctx.messages[:] = [msgs[0]] + msgs[-self._max:]
+        await self.push_frame(frame, direction)
+
+
 class EchoGate(FrameProcessor):
     """Drops STT transcripts arriving during or just after bot speech to prevent echo pollution."""
 
@@ -307,6 +326,9 @@ async def run_bot(websocket, stream_sid: str, call_sid: str):
         ),
     )
 
+    # Cap context to system + last N messages (8 exchanges) to bound LLM prefill.
+    history_cap = HistoryCap(context, max_messages=int(os.getenv("LLM_MAX_HISTORY", "16")))
+
     # task=None here; assigned after PipelineTask is created to avoid circular dep
     echo_gate = EchoGate()
     idle = IdleDetector(None)
@@ -323,6 +345,7 @@ async def run_bot(websocket, stream_sid: str, call_sid: str):
             idle,                  # silence watchdog before LLM aggregation
             transcript_logger,
             pair.user(),           # buffers user speech into LLM context
+            history_cap,           # trims context to system + last N before LLM
             llm,
             marker_stripper,       # strip [thinking]/[sympathetic] tags before they're spoken
             bot_response_logger,   # logs "Agent: ..." cleanly (replaces context dump)
