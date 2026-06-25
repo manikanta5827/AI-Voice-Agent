@@ -13,10 +13,12 @@ from pipecat.frames.frames import (
     InterimTranscriptionFrame,
     LLMFullResponseEndFrame,
     LLMTextFrame,
+    MetricsFrame,
     TranscriptionFrame,
     TTSAudioRawFrame,
     TTSSpeakFrame,
 )
+from pipecat.metrics.metrics import TTFBMetricsData
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
@@ -39,8 +41,7 @@ from pipecat.turns.user_turn_strategies import UserTurnStrategies
 
 from db import end_call, insert_call, insert_message
 
-# Suppress pipecat's verbose "Generating chat from context [full system prompt...]" dump.
-# LLM errors still surface via exception propagation in the async pipeline.
+# Suppress verbose system prompt dump. Errors still surface via exception propagation.
 logger.disable("pipecat.services.openai.base_llm")
 logger.disable("pipecat.services.google.llm")
 logger.disable("pipecat.services.anthropic.llm")
@@ -63,8 +64,7 @@ IDLE_BYE_MSG = "సరే, తర్వాత మాట్లాడదాం. By
 
 
 class IdleDetector(FrameProcessor):
-    """Hangs up after 45s of true silence. Timer resets on every user transcript
-    AND whenever the bot speaks — so it can't fire mid-turn or right after a reply."""
+    """Hangs up after 45s of true silence. Resets on user or bot transcript."""
 
     def __init__(self, task: PipelineTask | None = None):
         super().__init__()
@@ -91,7 +91,7 @@ class IdleDetector(FrameProcessor):
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
-        # Reset on real user speech OR bot speech — never count an active turn as idle
+        # Reset on user or bot speech
         if isinstance(frame, (TranscriptionFrame, BotStartedSpeakingFrame)):
             self._reset()
         await self.push_frame(frame, direction)
@@ -108,14 +108,7 @@ class IdleDetector(FrameProcessor):
 
 
 class EchoGate(FrameProcessor):
-    """Drops STT transcripts that arrive while (and just after) the bot is speaking.
-
-    On phone calls the caller's handset echoes the bot's own audio back into the
-    line; STT then transcribes the bot's greeting/replies as if the caller said
-    them, polluting the LLM context (see the welcome showing up as `User:` in logs).
-    VAD-based turn interruption is unaffected — it's not transcript-driven, so the
-    caller can still cut the bot off. 0.4s tail covers echo lingering after bot stops.
-    """
+    """Drops STT transcripts arriving during or just after bot speech to prevent echo pollution."""
 
     _TAIL = 0.4
 
@@ -139,14 +132,7 @@ class EchoGate(FrameProcessor):
 
 
 class MarkerStripper(FrameProcessor):
-    """Cleans LLM text before TTS: strips [emotion] markers, fixes script spacing.
-
-    1. [thinking]/[sympathetic] etc. — Cartesia/ElevenLabs read them aloud, so remove.
-       Buffers a partial '[...' spanning token-stream frames so split markers are caught.
-    2. Telugu glued to English with no space ('దీనికిcomprehensive') makes TTS
-       mispronounce = robotic. Insert a space at Telugu<->Latin transitions, including
-       across frame boundaries (tracks the last char emitted).
-    """
+    """Cleans LLM text before TTS: strips [emotion] markers and fixes script spacing."""
 
     # Telugu Unicode block <-> Latin letters, in both orders
     _TE_LAT = re.compile(r"([ఀ-౿])([A-Za-z])")
@@ -180,7 +166,7 @@ class MarkerStripper(FrameProcessor):
                 self._pending, text = text[idx:], text[:idx]
             if text:
                 text = self._space(text)
-                # fix a script transition split across frames (last char ↔ first char)
+                # fix script transition split across frames
                 if self._last_char and (
                     (self._is_te(self._last_char) and self._is_lat(text[0]))
                     or (self._is_lat(self._last_char) and self._is_te(text[0]))
@@ -197,8 +183,20 @@ class MarkerStripper(FrameProcessor):
         await self.push_frame(frame, direction)
 
 
+class TTFBLogger(FrameProcessor):
+    """Logs per-service time-to-first-byte (requires enable_metrics=True)."""
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+        if isinstance(frame, MetricsFrame):
+            for d in frame.data:
+                if isinstance(d, TTFBMetricsData):
+                    logger.info(f"TTFB {d.processor}={d.value:.2f}s")
+        await self.push_frame(frame, direction)
+
+
 class BotResponseLogger(FrameProcessor):
-    """Logs the bot's complete LLM response as one clean line instead of the full context dump."""
+    """Logs the bot's complete LLM response cleanly."""
 
     def __init__(self):
         super().__init__()
@@ -268,6 +266,10 @@ async def run_bot(websocket, stream_sid: str, call_sid: str):
         from services.hugging_llm import create_huggingface_llm
         llm = create_huggingface_llm()
         logger.info("Using Hugging Face LLM (Navarasa)")
+    elif llm_provider == "openai":
+        from services.llm import create_openai_llm
+        llm = create_openai_llm()
+        logger.info("Using direct OpenAI API")
     elif llm_provider == "gemini":
         from services.llm import create_gemini_llm
         llm = create_gemini_llm()
@@ -283,12 +285,7 @@ async def run_bot(websocket, stream_sid: str, call_sid: str):
     tts = create_tts()
 
     context = LLMContext(messages=[{"role": "system", "content": SYSTEM_PROMPT}])
-    # Bug fixes:
-    # 1. Only VADUserTurnStartStrategy — removing TranscriptionUserTurnStartStrategy
-    #    prevents late Soniox chunks from re-triggering the LLM after a turn ends.
-    # 2. SpeechTimeoutUserTurnStopStrategy replaces Smart Turn v3 (English-tuned ML
-    #    model that marks Telugu short phrases INCOMPLETE, causing silent freezes).
-    #    0.8s silence after last transcript → LLM fires. Predictable for phone calls.
+    # Use VAD for start and SpeechTimeout for predictable turn boundaries
     pair = LLMContextAggregatorPair(
         context,
         user_params=LLMUserAggregatorParams(
@@ -297,7 +294,8 @@ async def run_bot(websocket, stream_sid: str, call_sid: str):
                 start=[VADUserTurnStartStrategy()],
                 stop=[SpeechTimeoutUserTurnStopStrategy(user_speech_timeout=0.4)],
             ),
-            user_turn_stop_timeout=2.0,
+            # Fallback cap on how long to wait to confirm turn-end
+            user_turn_stop_timeout=1.0,
         ),
     )
 
@@ -307,6 +305,7 @@ async def run_bot(websocket, stream_sid: str, call_sid: str):
     transcript_logger = TranscriptLogger(None, call_sid)
     marker_stripper = MarkerStripper()
     bot_response_logger = BotResponseLogger()
+    ttfb_logger = TTFBLogger()
 
     task = PipelineTask(
         Pipeline([
@@ -320,10 +319,15 @@ async def run_bot(websocket, stream_sid: str, call_sid: str):
             marker_stripper,       # strip [thinking]/[sympathetic] tags before they're spoken
             bot_response_logger,   # logs "Agent: ..." cleanly (replaces context dump)
             tts,
+            ttfb_logger,           # prints per-service TTFB (stt/llm/tts) each turn
             transport.output(),
             pair.assistant(),      # captures LLM reply into context for next turn
         ]),
-        params=PipelineParams(allow_interruptions=True),
+        params=PipelineParams(
+            allow_interruptions=True,
+            enable_metrics=True,        # emit per-service TTFB/processing metrics
+            enable_usage_metrics=True,  # emit LLM token usage
+        ),
     )
 
     idle.set_task(task)
@@ -334,12 +338,7 @@ async def run_bot(websocket, stream_sid: str, call_sid: str):
         logger.info("Twilio connected — playing cached welcome")
         idle.start()
         context.messages.append({"role": "assistant", "content": WELCOME_MSG})
-        # Play PRE-RENDERED welcome audio (assets/welcome_*.pcm), not live TTS.
-        # Live TTSSpeakFrame meant a 5-7s cold Cartesia WS connect + synthesis before
-        # any sound — during which the caller said "hello?" into silence, triggering an
-        # LLM reply that overlapped the late-arriving welcome. Cached bytes play
-        # instantly; TTSAudioRawFrame sets bot-speaking state so a caller talking over
-        # it interrupts cleanly (Twilio buffer flushed). 8kHz mono PCM matches Twilio.
+        # Play pre-rendered welcome audio to avoid initial TTS latency
         audio = await get_welcome_audio(WELCOME_MSG)
         await task.queue_frames([
             TTSAudioRawFrame(audio=audio, sample_rate=8000, num_channels=1)
@@ -351,7 +350,7 @@ async def run_bot(websocket, stream_sid: str, call_sid: str):
         """Ends the call after MAX_CALL_MINUTES regardless of conversation state."""
         await asyncio.sleep(max_min * 60)
         logger.info(f"Max duration {max_min}min reached")
-        # Inject a system nudge so the LLM gives a natural farewell, not a cut-off
+        # Inject a system nudge for a natural farewell
         context.messages.append({
             "role": "system",
             "content": (

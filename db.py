@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 
 import asyncpg
 
-# ponytail: single global pool, fine for one-process server; use per-tenant pools if multi-tenant
+# global db connection pool
 _pool: asyncpg.Pool | None = None
 
 
@@ -18,7 +18,7 @@ async def get_pool() -> asyncpg.Pool:
 async def insert_call(call_sid: str, stream_sid: str):
     pool = await get_pool()
     await pool.execute(
-        # ON CONFLICT DO NOTHING guards against duplicate webhook deliveries from Twilio
+        # Guard against duplicate webhooks
         "INSERT INTO calls (call_sid, stream_sid, started_at) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
         call_sid, stream_sid, datetime.now(timezone.utc),
     )

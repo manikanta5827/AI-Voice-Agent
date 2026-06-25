@@ -6,29 +6,29 @@ from pipecat.services.cartesia.tts import (
     GenerationConfig,
 )
 from pipecat.services.elevenlabs.tts import ElevenLabsTTSService, ElevenLabsTTSSettings
+from pipecat.services.tts_service import TextAggregationMode
 
 
 def create_cartesia_tts() -> CartesiaTTSService:
     return CartesiaTTSService(
         api_key=os.getenv("CARTESIA_API_KEY"),
+        # Use TOKEN aggregation to stream words to Cartesia immediately instead of waiting for full sentences.
+        text_aggregation_mode=TextAggregationMode.TOKEN,
         settings=CartesiaTTSSettings(
             voice=os.getenv("CARTESIA_VOICE_ID"),
             model="sonic-3.5",
             language="te",
-            # default 1.0 sounds sluggish on phone; 1.1 = brisk but natural. Range [0.6, 1.5]
+            # Default 1.0 sounds sluggish; 1.1 is brisk but natural.
             generation_config=GenerationConfig(speed=1.1),
         ),
     )
 
 
 def create_elevenlabs_tts() -> ElevenLabsTTSService:
-    # WebSocket streaming: LLM token stream → ElevenLabs → Twilio MULAW, no buffering.
-    # No language_code param — Telugu auto-detected from voice clone (set during creation).
-    # stability=0.4: human-like variability (1.0 = robotic monotone, 0.0 = chaotic)
-    # style=0.25: mild expressiveness boost without overdoing it on an IVC clone
-    # similarity_boost=0.75: loose enough for IVC (5-min clone has less voice data)
+    # WebSocket streaming: LLM token stream -> ElevenLabs -> Twilio MULAW.
     return ElevenLabsTTSService(
         api_key=os.getenv("ELEVENLABS_API_KEY"),
+        text_aggregation_mode=TextAggregationMode.TOKEN,  # stream words, don't wait for full sentence
         settings=ElevenLabsTTSSettings(
             voice=os.getenv("ELEVENLABS_VOICE_ID"),
             model="eleven_turbo_v2_5",

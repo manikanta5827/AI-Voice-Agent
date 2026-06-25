@@ -12,13 +12,9 @@ def clean_telugu_transcript(input_file, output_file):
             continue
         
         # Remove line numbers and timestamps
-        # Pattern: number: timestamp text
-        # Timestamps like: 0:033 seconds, 1:201 minute, 20 seconds, 2:012 minutes, 1 second
         line = re.sub(r'^\d+:\d+\s*(?:seconds?|minutes?(?:,\s*\d+\s*seconds?)?)\s*', '', line)
         
         # Remove English characters and punctuation, keep only Telugu
-        # Telugu Unicode range: \u0C00-\u0C7F
-        # Also keep spaces and common punctuation that might be part of Telugu text
         cleaned = re.sub(r'[a-zA-Z0-9\[\]\(\)%$#@!&*+=/\\<>{}~`|^_]', ' ', line)
         
         # Remove multiple spaces

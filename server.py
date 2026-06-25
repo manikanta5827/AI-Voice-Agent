@@ -51,8 +51,7 @@ async def media_stream(websocket: WebSocket):
     """Receives Twilio audio frames and hands off to the Pipecat pipeline."""
     await websocket.accept()
 
-    # Twilio sends a "connected" event then a "start" event before any audio;
-    # we must consume them to get the stream/call SIDs needed by the bot
+    # Consume Twilio 'connected' and 'start' events to get stream and call SIDs
     stream_sid = ""
     call_sid = ""
     async for raw in websocket.iter_text():

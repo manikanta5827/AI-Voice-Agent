@@ -1,9 +1,5 @@
 """
-Pre-generates welcome audio once via Cartesia REST API and caches to disk.
-On every subsequent call, reads from file — zero TTS latency on connect.
-
-Cache key = hash(text + voice id), so changing the welcome text or voice
-auto-regenerates. No manual deletion needed.
+Pre-generates and caches welcome audio via Cartesia REST API for zero TTS latency on connect.
 """
 
 import hashlib
@@ -19,7 +15,7 @@ _audio_cache: bytes | None = None
 
 
 def _cache_path(text: str) -> Path:
-    # 16-bit signed LE PCM, 8kHz mono. Key on text + voice so stale audio can't linger.
+    # 16-bit signed LE PCM, 8kHz mono. Key on text + voice.
     key = hashlib.sha1(f"{text}|{os.getenv('CARTESIA_VOICE_ID')}".encode()).hexdigest()[:12]
     return CACHE_DIR / f"welcome_{key}.pcm"
 
