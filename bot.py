@@ -13,10 +13,12 @@ from pipecat.frames.frames import (
     InterimTranscriptionFrame,
     LLMFullResponseEndFrame,
     LLMTextFrame,
+    MetricsFrame,
     TranscriptionFrame,
     TTSAudioRawFrame,
     TTSSpeakFrame,
 )
+from pipecat.metrics.metrics import TTFBMetricsData
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
@@ -195,6 +197,19 @@ class MarkerStripper(FrameProcessor):
         await self.push_frame(frame, direction)
 
 
+class TTFBLogger(FrameProcessor):
+    """Logs per-service time-to-first-byte (stt/llm/tts) to find the slow leg.
+    Gated by DEBUG_TTFB; requires enable_metrics=True."""
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+        if isinstance(frame, MetricsFrame):
+            for d in frame.data:
+                if isinstance(d, TTFBMetricsData):
+                    logger.info(f"TTFB {d.processor}={d.value:.2f}s")
+        await self.push_frame(frame, direction)
+
+
 class TranscriptLogger(FrameProcessor):
     """Writes every user utterance to DB and triggers end-call on goodbye phrases."""
 
@@ -272,6 +287,9 @@ async def run_bot(websocket, stream_sid: str, call_sid: str):
     tts = create_tts()
 
     context = LLMContext(messages=[{"role": "system", "content": SYSTEM_PROMPT}])
+    # Silence (secs) after speech before turn-end fires. Lower = snappier but risks
+    # cutting users mid-pause. Tune via env while latency-testing; 0.4 is the safe default.
+    turn_silence = float(os.getenv("TURN_SILENCE_SECS", "0.4"))
     # Use VAD for start and SpeechTimeout for predictable turn boundaries
     pair = LLMContextAggregatorPair(
         context,
@@ -279,7 +297,7 @@ async def run_bot(websocket, stream_sid: str, call_sid: str):
             vad_analyzer=SileroVADAnalyzer(),
             user_turn_strategies=UserTurnStrategies(
                 start=[VADUserTurnStartStrategy()],
-                stop=[SpeechTimeoutUserTurnStopStrategy(user_speech_timeout=0.4)],
+                stop=[SpeechTimeoutUserTurnStopStrategy(user_speech_timeout=turn_silence)],
             ),
             # Fallback cap on how long to wait to confirm turn-end
             user_turn_stop_timeout=1.0,
@@ -294,22 +312,31 @@ async def run_bot(websocket, stream_sid: str, call_sid: str):
     idle = IdleDetector(None)
     transcript_logger = TranscriptLogger(None, call_sid)
     marker_stripper = MarkerStripper()
+    # Per-leg TTFB logging only when DEBUG_TTFB is truthy; off in prod.
+    ttfb_logger = (
+        TTFBLogger()
+        if os.getenv("DEBUG_TTFB", "").lower() in ("1", "true", "yes", "on")
+        else None
+    )
+
+    stages = [
+        transport.input(),
+        stt,
+        echo_gate,             # drop self-transcribed echo while bot speaks
+        idle,                  # silence watchdog before LLM aggregation
+        transcript_logger,
+        pair.user(),           # buffers user speech into LLM context
+        history_cap,           # trims context to system + last N before LLM
+        llm,
+        marker_stripper,       # fix Telugu<->Latin script spacing before TTS
+        tts,
+        ttfb_logger,           # prints per-service TTFB each turn (DEBUG_TTFB only)
+        transport.output(),
+        pair.assistant(),      # captures LLM reply into context for next turn
+    ]
 
     task = PipelineTask(
-        Pipeline([
-            transport.input(),
-            stt,
-            echo_gate,             # drop self-transcribed echo while bot speaks
-            idle,                  # silence watchdog before LLM aggregation
-            transcript_logger,
-            pair.user(),           # buffers user speech into LLM context
-            history_cap,           # trims context to system + last N before LLM
-            llm,
-            marker_stripper,       # fix Telugu<->Latin script spacing before TTS
-            tts,
-            transport.output(),
-            pair.assistant(),      # captures LLM reply into context for next turn
-        ]),
+        Pipeline([s for s in stages if s is not None]),
         params=PipelineParams(
             allow_interruptions=True,
             enable_metrics=True,        # emit per-service TTFB/processing metrics
