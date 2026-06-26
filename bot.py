@@ -11,12 +11,17 @@ from pipecat.frames.frames import (
     EndFrame,
     Frame,
     InterimTranscriptionFrame,
+    LLMContextFrame,
     LLMFullResponseEndFrame,
     LLMTextFrame,
     MetricsFrame,
     TranscriptionFrame,
     TTSAudioRawFrame,
     TTSSpeakFrame,
+    UserStartedSpeakingFrame,
+    UserStoppedSpeakingFrame,
+    VADUserStartedSpeakingFrame,
+    VADUserStoppedSpeakingFrame,
 )
 from pipecat.metrics.metrics import TTFBMetricsData
 from pipecat.pipeline.pipeline import Pipeline
@@ -210,6 +215,64 @@ class TTFBLogger(FrameProcessor):
         await self.push_frame(frame, direction)
 
 
+class Timeline:
+    """Shared wall-clock marks for ONE user turn, written from several pipeline taps.
+    Per-service TTFB is each service's private clock and hides the handoff gaps
+    between stages; this stitches absolute timestamps across boundaries so the real
+    culprit is visible. Dumps the breakdown when the first text reaches TTS, then
+    disarms until the next turn. Aborted turns (no tts_send) are silently dropped."""
+
+    def __init__(self):
+        self._t: dict[str, float] = {}
+        self._armed = False
+
+    def mark(self, event: str):
+        now = time.monotonic()
+        if event == "user_start":
+            self._t = {"user_start": now}  # a new turn begins; reset
+            self._armed = True
+            return
+        if not self._armed or event in self._t:
+            return  # keep the FIRST occurrence of each event per turn
+        self._t[event] = now
+        if event == "tts_send":
+            self._dump()
+            self._armed = False
+
+    def _dump(self):
+        t = self._t
+
+        def gap(a: str, b: str) -> str:
+            return f"{(t[b] - t[a]) * 1000:4.0f}ms" if a in t and b in t else "  -  "
+
+        logger.info(
+            "TURN timeline | "
+            f"speech={gap('user_start', 'user_stop')} "
+            f"stop->llm_call={gap('user_stop', 'llm_call')} "
+            f"llm_ttft={gap('llm_call', 'llm_first')} "
+            f"llm_first->tts={gap('llm_first', 'tts_send')} "
+            f"|| stop->tts={gap('user_stop', 'tts_send')}"
+        )
+
+
+class TimelineTap(FrameProcessor):
+    """Stamps the shared Timeline when a watched frame passes this pipeline point.
+    `marks` maps a tuple of frame types -> event name."""
+
+    def __init__(self, timeline: Timeline, marks: dict):
+        super().__init__()
+        self._tl = timeline
+        self._marks = tuple(marks.items())
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+        for ftypes, event in self._marks:
+            if isinstance(frame, ftypes):
+                self._tl.mark(event)
+                break
+        await self.push_frame(frame, direction)
+
+
 class TranscriptLogger(FrameProcessor):
     """Writes every user utterance to DB and triggers end-call on goodbye phrases."""
 
@@ -312,12 +375,28 @@ async def run_bot(websocket, stream_sid: str, call_sid: str):
     idle = IdleDetector(None)
     transcript_logger = TranscriptLogger(None, call_sid)
     marker_stripper = MarkerStripper()
-    # Per-leg TTFB logging only when DEBUG_TTFB is truthy; off in prod.
-    ttfb_logger = (
-        TTFBLogger()
-        if os.getenv("DEBUG_TTFB", "").lower() in ("1", "true", "yes", "on")
-        else None
-    )
+
+    # Latency debug (DEBUG_TTFB): per-service TTFB + a cross-stage turn timeline
+    # that exposes the handoff gaps TTFB can't see. All None in prod.
+    debug_latency = os.getenv("DEBUG_TTFB", "").lower() in ("1", "true", "yes", "on")
+    ttfb_logger = TTFBLogger() if debug_latency else None
+    timeline = Timeline() if debug_latency else None
+    # Taps stamp absolute timestamps at the real pipeline boundaries.
+    # user_start/user_stop are stamped BEFORE the aggregator, which may consume the
+    # VAD speaking frames; llm_call is stamped right before the LLM.
+    tap_user = TimelineTap(timeline, {
+        (UserStartedSpeakingFrame, VADUserStartedSpeakingFrame): "user_start",
+        (UserStoppedSpeakingFrame, VADUserStoppedSpeakingFrame): "user_stop",
+    }) if debug_latency else None
+    tap_pre_llm = TimelineTap(timeline, {
+        (LLMContextFrame,): "llm_call",   # context frame entering the LLM
+    }) if debug_latency else None
+    tap_post_llm = TimelineTap(timeline, {
+        (LLMTextFrame,): "llm_first",      # first token out of the LLM
+    }) if debug_latency else None
+    tap_pre_tts = TimelineTap(timeline, {
+        (LLMTextFrame,): "tts_send",       # first text handed to Cartesia
+    }) if debug_latency else None
 
     stages = [
         transport.input(),
@@ -325,10 +404,14 @@ async def run_bot(websocket, stream_sid: str, call_sid: str):
         echo_gate,             # drop self-transcribed echo while bot speaks
         idle,                  # silence watchdog before LLM aggregation
         transcript_logger,
+        tap_user,              # marks user_start/user_stop (DEBUG_TTFB only)
         pair.user(),           # buffers user speech into LLM context
         history_cap,           # trims context to system + last N before LLM
+        tap_pre_llm,           # marks llm_call (DEBUG_TTFB only)
         llm,
+        tap_post_llm,          # marks llm_first (DEBUG_TTFB only)
         marker_stripper,       # fix Telugu<->Latin script spacing before TTS
+        tap_pre_tts,           # marks tts_send (DEBUG_TTFB only)
         tts,
         ttfb_logger,           # prints per-service TTFB each turn (DEBUG_TTFB only)
         transport.output(),
