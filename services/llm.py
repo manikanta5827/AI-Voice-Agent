@@ -134,7 +134,7 @@ def create_openai_llm() -> OpenAILLMService:
 def create_deepseek_llm() -> OpenAILLMService:
     """DeepSeek via its OpenAI-compatible endpoint. thinking MUST be disabled —
     default-on reasoning makes it ~5x slower (3.5s vs 0.96s TTFT in benchmark)."""
-    model_name = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash")
+    model_name = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-pro")
     return OpenAILLMService(
         api_key=os.getenv("DEEPSEEK_API_KEY"),
         base_url="https://api.deepseek.com",

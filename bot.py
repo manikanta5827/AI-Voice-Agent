@@ -13,12 +13,10 @@ from pipecat.frames.frames import (
     InterimTranscriptionFrame,
     LLMFullResponseEndFrame,
     LLMTextFrame,
-    MetricsFrame,
     TranscriptionFrame,
     TTSAudioRawFrame,
     TTSSpeakFrame,
 )
-from pipecat.metrics.metrics import TTFBMetricsData
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
@@ -138,20 +136,22 @@ class EchoGate(FrameProcessor):
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
-        if isinstance(frame, BotStartedSpeakingFrame):
-            self._bot_speaking = True
-        elif isinstance(frame, BotStoppedSpeakingFrame):
-            self._bot_speaking = False
-            self._unmute_at = time.monotonic() + self._TAIL
-        elif isinstance(frame, (TranscriptionFrame, InterimTranscriptionFrame)):
-            if self._bot_speaking or time.monotonic() < self._unmute_at:
+        match frame:
+            case BotStartedSpeakingFrame():
+                self._bot_speaking = True
+            case BotStoppedSpeakingFrame():
+                self._bot_speaking = False
+                self._unmute_at = time.monotonic() + self._TAIL
+            case (TranscriptionFrame() | InterimTranscriptionFrame()) if (
+                self._bot_speaking or time.monotonic() < self._unmute_at
+            ):
                 logger.debug("EchoGate: dropped transcript during bot speech")
                 return  # swallow the echo
         await self.push_frame(frame, direction)
 
 
 class MarkerStripper(FrameProcessor):
-    """Cleans LLM text before TTS: strips [emotion] markers and fixes script spacing."""
+    """Fixes Telugu<->Latin script spacing in LLM text before TTS."""
 
     # Telugu Unicode block <-> Latin letters, in both orders
     _TE_LAT = re.compile(r"([ఀ-౿])([A-Za-z])")
@@ -167,7 +167,6 @@ class MarkerStripper(FrameProcessor):
 
     def __init__(self):
         super().__init__()
-        self._pending = ""    # holds an unclosed '[...' carried to the next frame
         self._last_char = ""  # last char pushed, to fix space across frame boundaries
 
     def _space(self, text: str) -> str:
@@ -178,60 +177,21 @@ class MarkerStripper(FrameProcessor):
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
         if isinstance(frame, LLMTextFrame):
-            text = re.sub(r"\[[^\]]*\]", "", self._pending + frame.text)
-            self._pending = ""
-            idx = text.rfind("[")  # unclosed bracket → hold it for the next chunk
-            if idx != -1:
-                self._pending, text = text[idx:], text[:idx]
-            if text:
-                text = self._space(text)
-                # fix script transition split across frames
-                if self._last_char and (
-                    (self._is_te(self._last_char) and self._is_lat(text[0]))
-                    or (self._is_lat(self._last_char) and self._is_te(text[0]))
-                ):
-                    text = " " + text
-                self._last_char = text[-1]
-                await self.push_frame(LLMTextFrame(text), direction)
+            text = frame.text
+            if not text:
+                return  # drop empty chunk
+            text = self._space(text)
+            # fix script transition split across frames
+            if self._last_char and (
+                (self._is_te(self._last_char) and self._is_lat(text[0]))
+                or (self._is_lat(self._last_char) and self._is_te(text[0]))
+            ):
+                text = " " + text
+            self._last_char = text[-1]
+            await self.push_frame(LLMTextFrame(text), direction)
             return
         if isinstance(frame, LLMFullResponseEndFrame):
             self._last_char = ""  # reset between responses
-            if self._pending:
-                await self.push_frame(LLMTextFrame(self._pending), direction)  # flush stray '['
-                self._pending = ""
-        await self.push_frame(frame, direction)
-
-
-class TTFBLogger(FrameProcessor):
-    """Logs per-service time-to-first-byte (requires enable_metrics=True)."""
-
-    async def process_frame(self, frame: Frame, direction: FrameDirection):
-        await super().process_frame(frame, direction)
-        if isinstance(frame, MetricsFrame):
-            for d in frame.data:
-                if isinstance(d, TTFBMetricsData):
-                    logger.info(f"TTFB {d.processor}={d.value:.2f}s")
-        await self.push_frame(frame, direction)
-
-
-class BotResponseLogger(FrameProcessor):
-    """Logs the bot's complete LLM response cleanly."""
-
-    def __init__(self):
-        super().__init__()
-        self._buf = ""
-
-    async def process_frame(self, frame: Frame, direction: FrameDirection):
-        await super().process_frame(frame, direction)
-        if isinstance(frame, LLMTextFrame):
-            self._buf += frame.text
-        elif isinstance(frame, LLMFullResponseEndFrame):
-            if self._buf:
-                logger.info(f"Agent: {self._buf.strip()}")
-                self._buf = ""
-        elif isinstance(frame, TTSSpeakFrame):
-            # welcome/idle messages queued via task.queue_frames
-            logger.info(f"Agent: {frame.text}")
         await self.push_frame(frame, direction)
 
 
@@ -280,34 +240,34 @@ async def run_bot(websocket, stream_sid: str, call_sid: str):
 
     stt = create_stt()
     
-    llm_provider = os.getenv("LLM_PROVIDER", "ai_gateway")
-    if llm_provider == "huggingface":
-        from services.hugging_llm import create_huggingface_llm
-        llm = create_huggingface_llm()
-        logger.info("Using Hugging Face LLM (Navarasa)")
-    elif llm_provider == "openai":
-        from services.llm import create_openai_llm
-        llm = create_openai_llm()
-        logger.info("Using direct OpenAI API")
-    elif llm_provider == "gemini":
-        from services.llm import create_gemini_llm
-        llm = create_gemini_llm()
-        logger.info("Using native Google Gemini API")
-    elif llm_provider == "groq":
-        from services.llm import create_groq_llm
-        llm = create_groq_llm()
-        logger.info("Using Groq LLM API")
-    elif llm_provider == "deepseek":
-        from services.llm import create_deepseek_llm
-        llm = create_deepseek_llm()
-        logger.info("Using DeepSeek API (thinking disabled)")
-    elif llm_provider == "sarvam":
-        from services.llm import create_sarvam_llm
-        llm = create_sarvam_llm()
-        logger.info("Using Sarvam API")
-    else:
-        llm = create_llm()
-        logger.info("Using default AI Gateway LLM")
+    match os.getenv("LLM_PROVIDER", "ai_gateway"):
+        case "huggingface":
+            from services.hugging_llm import create_huggingface_llm
+            llm = create_huggingface_llm()
+            logger.info("Using Hugging Face LLM (Navarasa)")
+        case "openai":
+            from services.llm import create_openai_llm
+            llm = create_openai_llm()
+            logger.info("Using direct OpenAI API")
+        case "gemini":
+            from services.llm import create_gemini_llm
+            llm = create_gemini_llm()
+            logger.info("Using native Google Gemini API")
+        case "groq":
+            from services.llm import create_groq_llm
+            llm = create_groq_llm()
+            logger.info("Using Groq LLM API")
+        case "deepseek":
+            from services.llm import create_deepseek_llm
+            llm = create_deepseek_llm()
+            logger.info("Using DeepSeek API (thinking disabled)")
+        case "sarvam":
+            from services.llm import create_sarvam_llm
+            llm = create_sarvam_llm()
+            logger.info("Using Sarvam API")
+        case _:
+            llm = create_llm()
+            logger.info("Using default AI Gateway LLM")
 
     tts = create_tts()
 
@@ -334,8 +294,6 @@ async def run_bot(websocket, stream_sid: str, call_sid: str):
     idle = IdleDetector(None)
     transcript_logger = TranscriptLogger(None, call_sid)
     marker_stripper = MarkerStripper()
-    bot_response_logger = BotResponseLogger()
-    ttfb_logger = TTFBLogger()
 
     task = PipelineTask(
         Pipeline([
@@ -347,10 +305,8 @@ async def run_bot(websocket, stream_sid: str, call_sid: str):
             pair.user(),           # buffers user speech into LLM context
             history_cap,           # trims context to system + last N before LLM
             llm,
-            marker_stripper,       # strip [thinking]/[sympathetic] tags before they're spoken
-            bot_response_logger,   # logs "Agent: ..." cleanly (replaces context dump)
+            marker_stripper,       # fix Telugu<->Latin script spacing before TTS
             tts,
-            ttfb_logger,           # prints per-service TTFB (stt/llm/tts) each turn
             transport.output(),
             pair.assistant(),      # captures LLM reply into context for next turn
         ]),
