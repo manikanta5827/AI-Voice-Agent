@@ -431,14 +431,18 @@ async def run_bot(websocket, stream_sid: str, call_sid: str):
     transcript_logger.set_task(task)
 
     @transport.event_handler("on_client_connected")
-    async def on_connected(_transport, _client):
+    async def on_connected(_transport, _client):  # pyright: ignore[reportUnusedFunction]
         logger.info("Twilio connected — playing cached welcome")
         idle.start()
         context.messages.append({"role": "assistant", "content": WELCOME_MSG})
-        # Play pre-rendered welcome audio to avoid initial TTS latency
+        # Play pre-rendered welcome audio to avoid initial TTS latency.
+        # Chunk into 20ms frames so the transport paces playback and a user barge-in
+        # can interrupt it — a single large frame floods Twilio's buffer un-interruptibly.
         audio = await get_welcome_audio(WELCOME_MSG)
+        chunk = 320  # 20ms @ 8kHz, 16-bit mono
         await task.queue_frames([
-            TTSAudioRawFrame(audio=audio, sample_rate=8000, num_channels=1)
+            TTSAudioRawFrame(audio=audio[i:i + chunk], sample_rate=8000, num_channels=1)
+            for i in range(0, len(audio), chunk)
         ])
 
     max_min = int(os.getenv("MAX_CALL_MINUTES", "3"))

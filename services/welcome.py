@@ -13,6 +13,14 @@ from loguru import logger
 CACHE_DIR = Path("assets")
 _audio_cache: bytes | None = None
 
+# Trailing silence so the final word isn't truncated at stream-end on Twilio.
+# Cached file stays pure Cartesia output; padding is a playback concern, added on load.
+_TAIL_MS = 300
+
+
+def _pad_tail(pcm: bytes, sample_rate: int = 8000, ms: int = _TAIL_MS) -> bytes:
+    return pcm + b"\x00" * (sample_rate * ms // 1000 * 2)  # 16-bit mono silence
+
 
 def _cache_path(text: str) -> Path:
     # 16-bit signed LE PCM, 8kHz mono. Key on text + voice.
@@ -28,16 +36,17 @@ async def get_welcome_audio(text: str) -> bytes:
     path = _cache_path(text)
     if path.exists():
         async with aiofiles.open(path, "rb") as f:
-            _audio_cache = await f.read()
-        logger.info(f"Welcome audio loaded from cache ({len(_audio_cache)} bytes)")
-        return _audio_cache
+            raw = await f.read()
+        logger.info(f"Welcome audio loaded from cache ({len(raw)} bytes)")
+    else:
+        logger.info("Generating welcome audio via Cartesia...")
+        raw = await _generate_cartesia(text)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        async with aiofiles.open(path, "wb") as f:
+            await f.write(raw)
+        logger.info(f"Welcome audio saved to {path} ({len(raw)} bytes)")
 
-    logger.info("Generating welcome audio via Cartesia...")
-    _audio_cache = await _generate_cartesia(text)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    async with aiofiles.open(path, "wb") as f:
-        await f.write(_audio_cache)
-    logger.info(f"Welcome audio saved to {path} ({len(_audio_cache)} bytes)")
+    _audio_cache = _pad_tail(raw)
     return _audio_cache
 
 
