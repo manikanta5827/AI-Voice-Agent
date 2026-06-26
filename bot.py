@@ -352,7 +352,7 @@ async def run_bot(websocket, stream_sid: str, call_sid: str):
     context = LLMContext(messages=[{"role": "system", "content": SYSTEM_PROMPT}])
     # Silence (secs) after speech before turn-end fires. Lower = snappier but risks
     # cutting users mid-pause. Tune via env while latency-testing; 0.4 is the safe default.
-    turn_silence = float(os.getenv("TURN_SILENCE_SECS", "0.4"))
+    turn_silence = float(os.getenv("TURN_SILENCE_SECS", "0.3"))
     # Use VAD for start and SpeechTimeout for predictable turn boundaries
     pair = LLMContextAggregatorPair(
         context,

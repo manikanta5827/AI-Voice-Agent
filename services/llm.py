@@ -157,7 +157,8 @@ def create_sarvam_llm() -> OpenAILLMService:
 
 
 def create_gemini_llm() -> GoogleLLMService:
-    model_name = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+    # flash-lite: lowest TTFT (the dominant latency leg). Set GEMINI_MODEL=gemini-2.5-flash for max quality.
+    model_name = os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite")
     return GoogleLLMService(
         api_key=os.getenv("GEMINI_API_KEY"),
         settings=GoogleLLMService.Settings(model=model_name, max_tokens=MAX_REPLY_TOKENS),
