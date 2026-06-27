@@ -160,6 +160,12 @@ class MarkerStripper(FrameProcessor):
     _TE_LAT = re.compile(r"([ఀ-౿])([A-Za-z])")
     _LAT_TE = re.compile(r"([A-Za-z])([ఀ-౿])")
 
+    # Strip redundant "అండి" when previous word already ends in "ండి"
+    # "చేయండి అండి" → "చేయండి", "చెప్పండి అండి." → "చెప్పండి."
+    _STALE_ANDI = re.compile(
+        r"(\u0C02\u0C21\u0C3F)\s+\u0C05\u0C02\u0C21\u0C3F(?=\s|[.?!,;:\u0964]|$)"
+    )
+
     @staticmethod
     def _is_te(c: str) -> bool:
         return "ఀ" <= c <= "౿"
@@ -172,9 +178,10 @@ class MarkerStripper(FrameProcessor):
         super().__init__()
         self._last_char = ""  # last char pushed, to fix space across frame boundaries
 
-    def _space(self, text: str) -> str:
+    def _clean(self, text: str) -> str:
         text = self._TE_LAT.sub(r"\1 \2", text)
         text = self._LAT_TE.sub(r"\1 \2", text)
+        text = self._STALE_ANDI.sub(r"\1", text)
         return text
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
@@ -183,7 +190,7 @@ class MarkerStripper(FrameProcessor):
             text = frame.text
             if not text:
                 return  # drop empty chunk
-            text = self._space(text)
+            text = self._clean(text)
             # fix script transition split across frames
             if self._last_char and (
                 (self._is_te(self._last_char) and self._is_lat(text[0]))

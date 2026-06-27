@@ -27,4 +27,7 @@ logs/
 .cursor/
 *.txt
 
+# Generated welcome audio cache
+assets/welcome*.pcm
+
 .venv-spleeter/
