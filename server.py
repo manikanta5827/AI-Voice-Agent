@@ -42,7 +42,7 @@ async def make_call(to: str | None = None):
     raw = to or os.getenv("MY_INDIAN_NUMBER", "")
     number = [n.strip() for n in raw.split(",") if n.strip()]
     
-    numbers = ["+918688664337"]
+    numbers = ["+918309497947"]
     # ponytail: calls placed sequentially; gather() if you need them fired in parallel
     return {"results": [await place_call(n, answer_url) for n in numbers]}
 

@@ -61,8 +61,7 @@ END_SIGNALS = [
 
 WELCOME_MSG = (
     "నమస్కారం, accounts team నుంచి priya మాట్లాడుతున్నా. "
-    "మీ యాభై వేల రూపాయల invoice ముప్పై రోజులు overdue ఉంది. ఈ payment గురించే call చేస్తున్నా. "
-    "ఎప్పుడు కడతారు sir?"
+    "మీ యాభై వేల రూపాయల invoice ముప్పై రోజులు overdue sir. ఎప్పుడు కడతారు?"
 )
 IDLE_BYE_MSG = "సరే, తర్వాత మాట్లాడదాం. Bye!"
 
