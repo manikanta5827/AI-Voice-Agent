@@ -1,5 +1,6 @@
 import asyncio
 import os
+import sys
 from contextlib import asynccontextmanager
 
 import uvicorn
@@ -13,6 +14,9 @@ from services.telephony import answer_xml, place_call, provider
 from services.warmup import warmup_all
 
 load_dotenv()
+
+logger.remove()
+logger.add(sys.stderr, enqueue=True)
 
 
 @asynccontextmanager

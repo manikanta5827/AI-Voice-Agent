@@ -34,7 +34,9 @@ from pipecat.processors.aggregators.llm_response_universal import (
     LLMContextAggregatorPair,
     LLMUserAggregatorParams,
 )
+from pipecat.adapters.schemas.function_schema import FunctionSchema
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
+from pipecat.services.llm_service import FunctionCallParams
 from pipecat.turns.user_start.vad_user_turn_start_strategy import VADUserTurnStartStrategy
 from pipecat.turns.user_stop.speech_timeout_user_turn_stop_strategy import (
     SpeechTimeoutUserTurnStopStrategy,
@@ -55,26 +57,6 @@ from services.welcome import get_welcome_audio
 from services.noise_mixer import BackgroundNoiseMixer
 from business import WELCOME_MSG
 
-# English + Telugu phrases that signal the caller wants to end
-END_SIGNALS = [
-    "bye", "goodbye", "ok bye", "thank you", "thanks",
-    "థాంక్యూ", "అయిపోయింది", "చాలు",
-]
-
-# Phrases where caller is busy / wrong number / wants a callback later.
-# Detected the same way as END_SIGNALS — queues EndFrame to terminate the call
-# after the LLM's apology/farewell plays through TTS.
-BUSY_SIGNALS = [
-    "busy", "work call", "meeting", "driving",
-    "wrong number", "mis dial", "wrong person",
-    "some other time", "another time", "call later", "later call",
-    "call back", "call me back", "call again", "try again",
-    "not now", "can't talk", "can't speak", "talk later",
-    "i'll call you", "i will call you",
-    "time ledu", "time ledhandi", "time లేదు",
-    "busy ga unnanu", "busy ga unna",
-    "tarvata", "taruvata", "malli", "ippudu kudaradu",
-]
 
 
 
@@ -286,15 +268,11 @@ class TimelineTap(FrameProcessor):
 
 
 class TranscriptLogger(FrameProcessor):
-    """Writes every user utterance to DB and triggers end-call on goodbye phrases."""
+    """Writes every user utterance to DB."""
 
-    def __init__(self, task: PipelineTask | None, call_sid: str):
+    def __init__(self, call_sid: str):
         super().__init__()
-        self._task = task
         self._call_sid = call_sid
-
-    def set_task(self, task: PipelineTask):
-        self._task = task
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
@@ -302,13 +280,6 @@ class TranscriptLogger(FrameProcessor):
             text = frame.text
             logger.info(f"User: {text}")
             asyncio.create_task(insert_message(self._call_sid, "user", text))
-            if any(s in text.lower() for s in END_SIGNALS):
-                asyncio.create_task(end_call(self._call_sid))
-                asyncio.create_task(_delayed_end(self._task, secs=4))
-            elif any(s in text.lower() for s in BUSY_SIGNALS):
-                asyncio.create_task(end_call(self._call_sid))
-                # Shorter delay for busy/wrong-number — just enough for the apology
-                asyncio.create_task(_delayed_end(self._task, secs=4))
         await self.push_frame(frame, direction)
 
 
@@ -328,7 +299,31 @@ async def run_bot(websocket):
     llm = create_active_llm()
     tts = create_tts()
 
-    context = LLMContext(messages=[{"role": "system", "content": get_system_prompt()}])
+    async def end_call_tool(params: FunctionCallParams):
+        """LLM tool: end the call when the caller signals goodbye, is busy, or it's a wrong number."""
+        await end_call(call_sid)
+        # The LLM already generated the farewell text in the same turn, so just
+        # queue EndFrame after a short delay to let TTS audio finish.
+        asyncio.create_task(_delayed_end(task, secs=4))
+
+    llm.register_function("end_call", end_call_tool)
+
+    end_call_schema = FunctionSchema(
+        name="end_call",
+        description=(
+            "End the phone call immediately. Call this when the caller says goodbye, "
+            "bye, thank you, or signals they want to end the conversation. Also call "
+            "this when the caller is busy, in a meeting, driving, on another call, "
+            "or says you reached a wrong number."
+        ),
+        properties={},
+        required=[],
+    )
+
+    context = LLMContext(
+        messages=[{"role": "system", "content": get_system_prompt()}],
+        tools=[end_call_schema],
+    )
     pair = LLMContextAggregatorPair(
         context,
         user_params=LLMUserAggregatorParams(
@@ -346,7 +341,7 @@ async def run_bot(websocket):
 
     # task=None here; assigned after PipelineTask is created to avoid circular dep
     echo_gate = EchoGate()
-    transcript_logger = TranscriptLogger(None, call_sid)
+    transcript_logger = TranscriptLogger(call_sid)
     marker_stripper = MarkerStripper()
     tail_padder = TailPadder()  # pad TTS tail so Twilio doesn't clip the last word
 
@@ -407,8 +402,6 @@ async def run_bot(websocket):
         ),
     )
 
-    transcript_logger.set_task(task)
-
     @pair.user().event_handler("on_user_turn_idle")
     async def on_idle(_aggregator):
         await end_call(call_sid)
@@ -431,7 +424,7 @@ async def run_bot(websocket):
             for i in range(0, len(audio), chunk)
         ])
 
-    max_min = int(os.getenv("MAX_CALL_MINUTES", "3"))
+    max_min = int(os.getenv("MAX_CALL_MINUTES", "5"))
 
     async def duration_guard():
         """Ends the call after MAX_CALL_MINUTES regardless of conversation state."""

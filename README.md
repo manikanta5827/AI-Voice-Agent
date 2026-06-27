@@ -125,7 +125,7 @@ GEMINI_API_KEY=...             # (or the key matching your LLM_PROVIDER)
 
 # --- Server ---
 PORT=8080
-MAX_CALL_MINUTES=3
+MAX_CALL_MINUTES=5
 LLM_MAX_HISTORY=16             # context cap: system msg + last N messages
 DEBUG_TTFB=                    # set to 1 to log per-turn latency timeline
 
@@ -217,7 +217,7 @@ then, not now.
 - **Barge-in** — user interrupts the agent mid-response (Silero VAD + Pipecat interruptions)
 - **Echo gate** — drops the bot's own audio re-transcribed during its speech
 - **Idle detection** — hangs up after sustained silence with a Telugu farewell
-- **Max call duration** — `MAX_CALL_MINUTES` (default 3), LLM generates the goodbye
+- **Max call duration** — `MAX_CALL_MINUTES` (default 5), LLM generates the goodbye
 - **End-call on goodbye** signals (`bye`, `చాలు`, `అయిపోయింది`, …)
 - **Latency timeline** — `DEBUG_TTFB=1` logs per-turn cross-stage timing
 - All turns logged to Supabase
