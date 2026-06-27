@@ -276,6 +276,23 @@ class Timeline:
         )
 
 
+class WelcomeLatencyTap(FrameProcessor):
+    """Measures time from pipeline start to the first TTS audio frame sent to the transport.
+    This exposes the exact delay a user hears before the welcome audio."""
+
+    def __init__(self):
+        super().__init__()
+        self._t0 = time.monotonic()
+        self._done = False
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+        if not self._done and direction == FrameDirection.DOWNSTREAM and isinstance(frame, TTSAudioRawFrame):
+            logger.info(f"Welcome audio latency: {(time.monotonic() - self._t0) * 1000:.0f}ms")
+            self._done = True
+        await self.push_frame(frame, direction)
+
+
 class TimelineTap(FrameProcessor):
     """Stamps the shared Timeline when a watched frame passes this pipeline point.
     `marks` maps a tuple of frame types -> event name."""
@@ -384,6 +401,8 @@ async def run_bot(websocket):
         (LLMTextFrame,): "tts_send",       # first text handed to Cartesia
     }) if debug_latency else None
 
+    welcome_tap = WelcomeLatencyTap()
+
     stages = [
         transport.input(),
         stt,
@@ -399,6 +418,7 @@ async def run_bot(websocket):
         marker_stripper,       # fix Telugu<->Latin script spacing before TTS
         tap_pre_tts,           # marks tts_send (DEBUG_TTFB only)
         tts,
+        welcome_tap,           # measures latency to first audio frame
         tail_padder,           # trailing silence so Twilio doesn't clip the last word
         ttfb_logger,           # prints per-service TTFB each turn (DEBUG_TTFB only)
         transport.output(),
