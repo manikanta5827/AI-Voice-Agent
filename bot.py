@@ -371,8 +371,11 @@ async def run_bot(websocket):
                 start=[VADUserTurnStartStrategy()],
                 stop=[SpeechTimeoutUserTurnStopStrategy(user_speech_timeout=turn_silence)],
             ),
-            # Fallback cap on how long to wait to confirm turn-end
-            user_turn_stop_timeout=1.0,
+            # After barge-in, STT can take 2-3s to finalize. 3.0 gives
+            # enough margin so the aggregator doesn't give up before the
+            # transcript arrives. Only fires if the SpeechTimeout strategy
+            # was consumed by an interruption.
+            user_turn_stop_timeout=3.0,
         ),
     )
 
