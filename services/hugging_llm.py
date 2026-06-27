@@ -13,6 +13,8 @@ from pipecat.processors.frame_processor import FrameDirection
 from pipecat.services.llm_service import LLMService
 from pipecat.services.settings import LLMSettings
 
+from business import AGENT_NAME
+
 class HuggingFaceLLMService(LLMService):
     def __init__(self, api_key: str, model_id: str, **kwargs):
         super().__init__(settings=LLMSettings(), **kwargs)
@@ -40,7 +42,7 @@ class HuggingFaceLLMService(LLMService):
                     case "user":
                         history.append(f"User: {msg['content']}")
                     case "assistant":
-                        history.append(f"priya: {msg['content']}")
+                        history.append(f"{AGENT_NAME}: {msg['content']}")
 
             user_msg = "\n".join(history)
             prompt = f"### Instruction:\n{system_prompt.strip()}\n\n### Input:\n{user_msg.strip()}\n\n### Response:\n"

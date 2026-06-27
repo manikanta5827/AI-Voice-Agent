@@ -52,6 +52,7 @@ from services.stt import create_stt
 from services.telephony import build_transport, provider
 from services.tts import create_tts
 from services.welcome import get_welcome_audio
+from business import WELCOME_MSG
 
 # English + Telugu phrases that signal the caller wants to end
 END_SIGNALS = [
@@ -59,10 +60,6 @@ END_SIGNALS = [
     "థాంక్యూ", "అయిపోయింది", "చాలు",
 ]
 
-WELCOME_MSG = (
-    "నమస్కారం, accounts team నుంచి priya మాట్లాడుతున్నా. "
-    "మీ యాభై వేల రూపాయల invoice ముప్పై రోజులు overdue sir. ఎప్పుడు కడతారు?"
-)
 IDLE_BYE_MSG = "సరే, తర్వాత మాట్లాడదాం. Bye!"
 
 

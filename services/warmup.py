@@ -81,7 +81,7 @@ async def _warm_tts():
 async def _warm_welcome():
     """Load + pad the cached welcome audio into the in-memory cache so the first
     call's on_client_connected returns it instantly (no disk read, no Cartesia gen)."""
-    from bot import WELCOME_MSG
+    from business import WELCOME_MSG
     from services.welcome import get_welcome_audio
 
     await get_welcome_audio(WELCOME_MSG)
