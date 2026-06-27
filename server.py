@@ -1,4 +1,6 @@
+import asyncio
 import os
+from contextlib import asynccontextmanager
 
 import uvicorn
 from dotenv import load_dotenv
@@ -8,10 +10,21 @@ from loguru import logger
 
 from bot import run_bot
 from services.telephony import answer_xml, place_call, provider
+from services.warmup import warmup_all
 
 load_dotenv()
 
-app = FastAPI()
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Warm STT/TTS/LLM in the background so the server is ready immediately and the
+    # first real call doesn't pay provider cold-start. Held on app.state so the task
+    # isn't garbage-collected mid-flight.
+    app.state.warmup = asyncio.create_task(warmup_all())
+    yield
+
+
+app = FastAPI(lifespan=lifespan)
 
 
 @app.get("/")

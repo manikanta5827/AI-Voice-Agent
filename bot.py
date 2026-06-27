@@ -47,7 +47,7 @@ from db import end_call, insert_call, insert_message
 logger.disable("pipecat.services.openai.base_llm")
 logger.disable("pipecat.services.google.llm")
 logger.disable("pipecat.services.anthropic.llm")
-from services.llm import SYSTEM_PROMPT, create_llm
+from services.llm import SYSTEM_PROMPT, create_active_llm
 from services.stt import create_stt
 from services.telephony import build_transport, provider
 from services.tts import create_tts
@@ -331,36 +331,8 @@ async def run_bot(websocket):
     await insert_call(call_sid, stream_sid)
 
     stt = create_stt()
-    
-    match os.getenv("LLM_PROVIDER", "ai_gateway"):
-        case "huggingface":
-            from services.hugging_llm import create_huggingface_llm
-            llm = create_huggingface_llm()
-            logger.info("Using Hugging Face LLM (Navarasa)")
-        case "openai":
-            from services.llm import create_openai_llm
-            llm = create_openai_llm()
-            logger.info("Using direct OpenAI API")
-        case "gemini":
-            from services.llm import create_gemini_llm
-            llm = create_gemini_llm()
-            logger.info("Using native Google Gemini API")
-        case "groq":
-            from services.llm import create_groq_llm
-            llm = create_groq_llm()
-            logger.info("Using Groq LLM API")
-        case "deepseek":
-            from services.llm import create_deepseek_llm
-            llm = create_deepseek_llm()
-            logger.info("Using DeepSeek API (thinking disabled)")
-        case "sarvam":
-            from services.llm import create_sarvam_llm
-            llm = create_sarvam_llm()
-            logger.info("Using Sarvam API")
-        case _:
-            llm = create_llm()
-            logger.info("Using default AI Gateway LLM")
-
+    llm = create_active_llm()
+    logger.info(f"LLM provider: {os.getenv('LLM_PROVIDER', 'ai_gateway')}")
     tts = create_tts()
 
     context = LLMContext(messages=[{"role": "system", "content": SYSTEM_PROMPT}])

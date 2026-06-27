@@ -182,3 +182,25 @@ def create_groq_llm() -> GroqLLMService:
         api_key=os.getenv("GROQ_API_KEY"),
         settings=GroqLLMService.Settings(model=model_name, max_tokens=MAX_REPLY_TOKENS),
     )
+
+
+def create_active_llm():
+    """Build the LLM service for the configured LLM_PROVIDER. Single source of
+    truth shared by the call pipeline (bot.run_bot) and startup warmup, so both
+    always exercise the same provider."""
+    match os.getenv("LLM_PROVIDER", "ai_gateway"):
+        case "huggingface":
+            from services.hugging_llm import create_huggingface_llm
+            return create_huggingface_llm()
+        case "openai":
+            return create_openai_llm()
+        case "gemini":
+            return create_gemini_llm()
+        case "groq":
+            return create_groq_llm()
+        case "deepseek":
+            return create_deepseek_llm()
+        case "sarvam":
+            return create_sarvam_llm()
+        case _:
+            return create_llm()
