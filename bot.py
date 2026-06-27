@@ -2,6 +2,7 @@ import asyncio
 import os
 import re
 import time
+import uuid
 
 from loguru import logger
 from pipecat.audio.vad.silero import SileroVADAnalyzer
@@ -18,6 +19,7 @@ from pipecat.frames.frames import (
     TranscriptionFrame,
     TTSAudioRawFrame,
     TTSSpeakFrame,
+    TTSStoppedFrame,
     UserStartedSpeakingFrame,
     UserStoppedSpeakingFrame,
     VADUserStartedSpeakingFrame,
@@ -58,8 +60,9 @@ END_SIGNALS = [
 ]
 
 WELCOME_MSG = (
-    "నమస్కారం, SecureLife Insurance నుంచి priya మాట్లాడుతున్నా. "
-    "ఏం help కావాలో చెప్పండి."
+    "నమస్కారం, accounts team నుంచి priya మాట్లాడుతున్నా. "
+    "మీ యాభై వేల రూపాయల invoice ముప్పై రోజులు overdue ఉంది. ఈ payment గురించే call చేస్తున్నా. "
+    "ఎప్పుడు కడతారు sir?"
 )
 IDLE_BYE_MSG = "సరే, తర్వాత మాట్లాడదాం. Bye!"
 
@@ -198,6 +201,28 @@ class MarkerStripper(FrameProcessor):
         await self.push_frame(frame, direction)
 
 
+class TailPadder(FrameProcessor):
+    """Appends trailing silence after each TTS response so Twilio doesn't clip the
+    final word. Twilio drops the tail of bot audio at the playback boundary (the
+    one-shot welcome audio hit the same bug — see services/welcome._pad_tail); the
+    streaming TTS path needs the same padding. Silence goes out just before the
+    TTSStoppedFrame that closes the utterance."""
+
+    _TAIL_MS = 300
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+        if isinstance(frame, TTSStoppedFrame):
+            chunk = 320  # 20ms @ 8kHz, 16-bit mono — paced like the welcome audio
+            silence = b"\x00" * (8000 * self._TAIL_MS // 1000 * 2)
+            for i in range(0, len(silence), chunk):
+                await self.push_frame(
+                    TTSAudioRawFrame(audio=silence[i:i + chunk], sample_rate=8000, num_channels=1),
+                    direction,
+                )
+        await self.push_frame(frame, direction)
+
+
 class TTFBLogger(FrameProcessor):
     """Logs per-service time-to-first-byte (stt/llm/tts) to find the slow leg.
     Gated by DEBUG_TTFB; requires enable_metrics=True."""
@@ -297,8 +322,12 @@ async def run_bot(websocket):
     """Wire up and run the STT → LLM → TTS pipeline for one call. The active
     telephony provider (TELEPHONY env) builds the transport and handshake."""
     transport, call_sid, stream_sid = await build_transport(websocket)
-    if not call_sid and not stream_sid:
-        return  # malformed handshake — nothing to run
+    # Twilio with no SIDs = genuinely malformed handshake — nothing to run. For
+    # Vobiz, empty IDs must NOT close the socket (that refuses the call); the
+    # serializer is already built, so proceed with a synthetic id for the DB row.
+    if provider() == "twilio" and not call_sid and not stream_sid:
+        return
+    call_sid = call_sid or stream_sid or f"vobiz-{uuid.uuid4().hex[:12]}"
     await insert_call(call_sid, stream_sid)
 
     stt = create_stt()
@@ -360,6 +389,7 @@ async def run_bot(websocket):
     idle = IdleDetector(None)
     transcript_logger = TranscriptLogger(None, call_sid)
     marker_stripper = MarkerStripper()
+    tail_padder = TailPadder()  # pad TTS tail so Twilio doesn't clip the last word
 
     # Latency debug (DEBUG_TTFB): per-service TTFB + a cross-stage turn timeline
     # that exposes the handoff gaps TTFB can't see. All None in prod.
@@ -398,6 +428,7 @@ async def run_bot(websocket):
         marker_stripper,       # fix Telugu<->Latin script spacing before TTS
         tap_pre_tts,           # marks tts_send (DEBUG_TTFB only)
         tts,
+        tail_padder,           # trailing silence so Twilio doesn't clip the last word
         ttfb_logger,           # prints per-service TTFB each turn (DEBUG_TTFB only)
         transport.output(),
         pair.assistant(),      # captures LLM reply into context for next turn

@@ -133,16 +133,25 @@ async def _vobiz_serializer(websocket):
 
     # Vobiz's `start` event carries the negotiated format + IDs; reading it also
     # strips the handshake so the transport sees only media.
-    parsed = await parse_vobiz_start(websocket)
+    logger.info("Vobiz WS: waiting for first frame (parse_vobiz_start)...")
+    try:
+        parsed = await parse_vobiz_start(websocket)
+    except Exception as e:
+        # e.g. Vobiz sends a binary frame first → receive_text() rejects it.
+        logger.exception(f"Vobiz WS: parse_vobiz_start failed ({type(e).__name__})")
+        parsed = {"stream_id": "", "call_id": "", "encoding": None, "sample_rate": None, "raw": {}}
     call_id = (
         websocket.query_params.get("call_uuid")
         or websocket.query_params.get("call_id")
         or parsed["call_id"]
     )
     stream_id = parsed["stream_id"]
+    # Log the raw first frame: if event != 'start' or IDs are empty, the handshake
+    # shape differs from what parse_vobiz_start expects — that's the call-refused cause.
     logger.info(
-        f"Vobiz start: call={call_id!r} stream={stream_id!r} "
-        f"fmt=({parsed['encoding']!r},{parsed['sample_rate']})"
+        f"Vobiz first WS frame: event={parsed['raw'].get('event')!r} "
+        f"call={call_id!r} stream={stream_id!r} "
+        f"fmt=({parsed['encoding']!r},{parsed['sample_rate']}) raw={parsed['raw']}"
     )
     serializer = VobizFrameSerializer(
         stream_id=stream_id,
