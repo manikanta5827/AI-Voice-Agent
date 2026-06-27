@@ -126,7 +126,6 @@ GEMINI_API_KEY=...             # (or the key matching your LLM_PROVIDER)
 # --- Server ---
 PORT=8080
 MAX_CALL_MINUTES=3
-TURN_SILENCE_SECS=0.3          # silence after speech before the turn ends
 LLM_MAX_HISTORY=16             # context cap: system msg + last N messages
 DEBUG_TTFB=                    # set to 1 to log per-turn latency timeline
 

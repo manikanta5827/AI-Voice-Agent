@@ -61,54 +61,21 @@ END_SIGNALS = [
     "థాంక్యూ", "అయిపోయింది", "చాలు",
 ]
 
-IDLE_BYE_MSG = "సరే, తర్వాత మాట్లాడదాం. Bye!"
+# Phrases where caller is busy / wrong number / wants a callback later.
+# Detected the same way as END_SIGNALS — queues EndFrame to terminate the call
+# after the LLM's apology/farewell plays through TTS.
+BUSY_SIGNALS = [
+    "busy", "work call", "meeting", "driving",
+    "wrong number", "mis dial", "wrong person",
+    "some other time", "another time", "call later", "later call",
+    "call back", "call me back", "call again", "try again",
+    "not now", "can't talk", "can't speak", "talk later",
+    "i'll call you", "i will call you",
+    "time ledu", "time ledhandi", "time లేదు",
+    "busy ga unnanu", "busy ga unna",
+    "tarvata", "taruvata", "malli", "ippudu kudaradu",
+]
 
-
-class IdleDetector(FrameProcessor):
-    """Hangs up after 45s of true silence. Resets on user or bot transcript."""
-
-    def __init__(self, task: PipelineTask | None = None):
-        super().__init__()
-        self._task = task
-        self._timer: asyncio.Task | None = None
-
-    def set_task(self, task: PipelineTask):
-        self._task = task
-
-    def start(self):
-        self._reset()
-
-    def _reset(self):
-        if self._timer:
-            self._timer.cancel()
-        self._timer = asyncio.create_task(self._loop())
-
-    async def _loop(self):
-        try:
-            await asyncio.sleep(45)
-            await self._task.queue_frames([TTSSpeakFrame(IDLE_BYE_MSG), EndFrame()])
-        except asyncio.CancelledError:
-            pass
-
-    async def process_frame(self, frame: Frame, direction: FrameDirection):
-        await super().process_frame(frame, direction)
-        # Reset on user speech, bot start (safety: prevents firing mid-speech),
-        # and bot stop (restarts the clock after bot finishes speaking, so the
-        # 45s window measures actual *user* silence, not bot speaking time).
-        if isinstance(frame, (TranscriptionFrame, BotStartedSpeakingFrame,
-                              BotStoppedSpeakingFrame)):
-            self._reset()
-        await self.push_frame(frame, direction)
-
-    async def cleanup(self):
-        if self._timer:
-            self._timer.cancel()
-            try:
-                await self._timer  # wait until fully cancelled, not just signalled
-            except asyncio.CancelledError:
-                pass
-            self._timer = None
-        await super().cleanup()
 
 
 class HistoryCap(FrameProcessor):
@@ -337,7 +304,10 @@ class TranscriptLogger(FrameProcessor):
             asyncio.create_task(insert_message(self._call_sid, "user", text))
             if any(s in text.lower() for s in END_SIGNALS):
                 asyncio.create_task(end_call(self._call_sid))
-                # Small delay so TTS can finish the farewell before disconnect
+                asyncio.create_task(_delayed_end(self._task, secs=4))
+            elif any(s in text.lower() for s in BUSY_SIGNALS):
+                asyncio.create_task(end_call(self._call_sid))
+                # Shorter delay for busy/wrong-number — just enough for the apology
                 asyncio.create_task(_delayed_end(self._task, secs=4))
         await self.push_frame(frame, direction)
 
@@ -359,23 +329,15 @@ async def run_bot(websocket):
     tts = create_tts()
 
     context = LLMContext(messages=[{"role": "system", "content": get_system_prompt()}])
-    # Silence (secs) after speech before turn-end fires. Lower = snappier but risks
-    # cutting users mid-pause. Tune via env while latency-testing; 0.4 is the safe default.
-    turn_silence = float(os.getenv("TURN_SILENCE_SECS", "0.3"))
-    # Use VAD for start and SpeechTimeout for predictable turn boundaries
     pair = LLMContextAggregatorPair(
         context,
         user_params=LLMUserAggregatorParams(
             vad_analyzer=SileroVADAnalyzer(),
+            user_idle_timeout=45,
             user_turn_strategies=UserTurnStrategies(
                 start=[VADUserTurnStartStrategy()],
-                stop=[SpeechTimeoutUserTurnStopStrategy(user_speech_timeout=turn_silence)],
+                stop=[SpeechTimeoutUserTurnStopStrategy(user_speech_timeout=0.3)],
             ),
-            # After barge-in, STT can take 2-3s to finalize. 3.0 gives
-            # enough margin so the aggregator doesn't give up before the
-            # transcript arrives. Only fires if the SpeechTimeout strategy
-            # was consumed by an interruption.
-            user_turn_stop_timeout=3.0,
         ),
     )
 
@@ -384,7 +346,6 @@ async def run_bot(websocket):
 
     # task=None here; assigned after PipelineTask is created to avoid circular dep
     echo_gate = EchoGate()
-    idle = IdleDetector(None)
     transcript_logger = TranscriptLogger(None, call_sid)
     marker_stripper = MarkerStripper()
     tail_padder = TailPadder()  # pad TTS tail so Twilio doesn't clip the last word
@@ -419,7 +380,6 @@ async def run_bot(websocket):
         transport.input(),
         stt,
         echo_gate,             # drop self-transcribed echo while bot speaks
-        idle,                  # silence watchdog before LLM aggregation
         transcript_logger,
         tap_user,              # marks user_start/user_stop (DEBUG_TTFB only)
         pair.user(),           # buffers user speech into LLM context
@@ -447,13 +407,19 @@ async def run_bot(websocket):
         ),
     )
 
-    idle.set_task(task)
     transcript_logger.set_task(task)
+
+    @pair.user().event_handler("on_user_turn_idle")
+    async def on_idle(_aggregator):
+        await end_call(call_sid)
+        await task.queue_frames([
+            TTSSpeakFrame("సరే, తర్వాత మాట్లాడదాం. Bye!"),
+        ])
+        asyncio.create_task(_delayed_end(task, secs=4))
 
     @transport.event_handler("on_client_connected")
     async def on_connected(_transport, _client):  # pyright: ignore[reportUnusedFunction]
         logger.info(f"{provider()} connected — playing cached welcome")
-        idle.start()
         context.messages.append({"role": "assistant", "content": WELCOME_MSG})
         # Play pre-rendered welcome audio to avoid initial TTS latency.
         # Chunk into 20ms frames so the transport paces playback and a user barge-in
@@ -486,7 +452,6 @@ async def run_bot(websocket):
 
     runner = PipelineRunner()
     await runner.run(task)
-    await idle.cleanup()
 
 
 async def _delayed_end(task: PipelineTask, secs: float):
