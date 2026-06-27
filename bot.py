@@ -92,8 +92,11 @@ class IdleDetector(FrameProcessor):
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
-        # Reset on user or bot speech
-        if isinstance(frame, (TranscriptionFrame, BotStartedSpeakingFrame)):
+        # Reset on user speech, bot start (safety: prevents firing mid-speech),
+        # and bot stop (restarts the clock after bot finishes speaking, so the
+        # 45s window measures actual *user* silence, not bot speaking time).
+        if isinstance(frame, (TranscriptionFrame, BotStartedSpeakingFrame,
+                              BotStoppedSpeakingFrame)):
             self._reset()
         await self.push_frame(frame, direction)
 
