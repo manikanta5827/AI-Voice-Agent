@@ -332,7 +332,6 @@ async def run_bot(websocket):
 
     stt = create_stt()
     llm = create_active_llm()
-    logger.info(f"LLM provider: {os.getenv('LLM_PROVIDER', 'ai_gateway')}")
     tts = create_tts()
 
     context = LLMContext(messages=[{"role": "system", "content": SYSTEM_PROMPT}])
