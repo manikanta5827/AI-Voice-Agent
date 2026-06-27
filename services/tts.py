@@ -11,6 +11,8 @@ from pipecat.services.elevenlabs.tts import ElevenLabsTTSService, ElevenLabsTTSS
 def create_cartesia_tts() -> CartesiaTTSService:
     return CartesiaTTSService(
         api_key=os.getenv("CARTESIA_API_KEY"),
+        # Generate natively at Twilio's 8kHz — skips the 24k->8k resample + 3x bytes.
+        sample_rate=8000,
         settings=CartesiaTTSSettings(
             voice=os.getenv("CARTESIA_VOICE_ID"),
             model="sonic-3.5",

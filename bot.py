@@ -33,11 +33,6 @@ from pipecat.processors.aggregators.llm_response_universal import (
     LLMUserAggregatorParams,
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
-from pipecat.serializers.twilio import TwilioFrameSerializer
-from pipecat.transports.websocket.fastapi import (
-    FastAPIWebsocketParams,
-    FastAPIWebsocketTransport,
-)
 from pipecat.turns.user_start.vad_user_turn_start_strategy import VADUserTurnStartStrategy
 from pipecat.turns.user_stop.speech_timeout_user_turn_stop_strategy import (
     SpeechTimeoutUserTurnStopStrategy,
@@ -52,6 +47,7 @@ logger.disable("pipecat.services.google.llm")
 logger.disable("pipecat.services.anthropic.llm")
 from services.llm import SYSTEM_PROMPT, create_llm
 from services.stt import create_stt
+from services.telephony import build_transport, provider
 from services.tts import create_tts
 from services.welcome import get_welcome_audio
 
@@ -297,24 +293,13 @@ class TranscriptLogger(FrameProcessor):
         await self.push_frame(frame, direction)
 
 
-async def run_bot(websocket, stream_sid: str, call_sid: str):
-    """Wire up and run the STT → LLM → TTS pipeline for one call."""
+async def run_bot(websocket):
+    """Wire up and run the STT → LLM → TTS pipeline for one call. The active
+    telephony provider (TELEPHONY env) builds the transport and handshake."""
+    transport, call_sid, stream_sid = await build_transport(websocket)
+    if not call_sid and not stream_sid:
+        return  # malformed handshake — nothing to run
     await insert_call(call_sid, stream_sid)
-
-    # Twilio sends/receives MULAW 8kHz audio; TwilioFrameSerializer handles encoding
-    transport = FastAPIWebsocketTransport(
-        websocket=websocket,
-        params=FastAPIWebsocketParams(
-            audio_in_enabled=True,
-            audio_out_enabled=True,
-            serializer=TwilioFrameSerializer(
-                stream_sid=stream_sid,
-                call_sid=call_sid,
-                account_sid=os.getenv("TWILIO_ACCOUNT_SID"),
-                auth_token=os.getenv("TWILIO_AUTH_TOKEN"),
-            ),
-        ),
-    )
 
     stt = create_stt()
     
@@ -432,7 +417,7 @@ async def run_bot(websocket, stream_sid: str, call_sid: str):
 
     @transport.event_handler("on_client_connected")
     async def on_connected(_transport, _client):  # pyright: ignore[reportUnusedFunction]
-        logger.info("Twilio connected — playing cached welcome")
+        logger.info(f"{provider()} connected — playing cached welcome")
         idle.start()
         context.messages.append({"role": "assistant", "content": WELCOME_MSG})
         # Play pre-rendered welcome audio to avoid initial TTS latency.

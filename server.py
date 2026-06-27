@@ -1,14 +1,12 @@
-import json
 import os
 
 import uvicorn
 from dotenv import load_dotenv
 from fastapi import FastAPI, WebSocket
 from fastapi.responses import HTMLResponse
-from twilio.rest import Client
-from twilio.twiml.voice_response import Connect, VoiceResponse
 
 from bot import run_bot
+from services.telephony import answer_xml, place_call, provider
 
 load_dotenv()
 
@@ -17,54 +15,30 @@ app = FastAPI()
 
 @app.get("/")
 async def root():
-    return {"status": "running"}
+    return {"status": "running", "provider": provider()}
 
 
+# Standardized endpoints — same paths for every provider. The active channel is
+# chosen by TELEPHONY (twilio|vobiz); all provider logic lives in services/telephony.py.
 @app.get("/make-call")
 async def make_call():
-    """Outbound call: dials MY_INDIAN_NUMBER and connects it to the bot."""
-    client = Client(
-        os.getenv("TWILIO_ACCOUNT_SID"),
-        os.getenv("TWILIO_AUTH_TOKEN"),
-    )
-    call = client.calls.create(
-        url=f"https://{os.getenv('PUBLIC_URL')}/incoming-call",
-        to=os.getenv("MY_INDIAN_NUMBER"),
-        from_=os.getenv("TWILIO_US_NUMBER"),
-    )
-    print(os.getenv("MY_INDIAN_NUMBER"))
-    return {"status": "calling", "sid": call.sid, "num": os.getenv("MY_INDIAN_NUMBER")}
+    """Outbound: dials MY_INDIAN_NUMBER and connects it to the bot."""
+    answer_url = f"https://{os.getenv('PUBLIC_URL')}/incoming-call"
+    return await place_call(os.getenv("MY_INDIAN_NUMBER"), answer_url)
 
 
-@app.post("/incoming-call")
+@app.api_route("/incoming-call", methods=["GET", "POST"])
 async def incoming_call():
-    """Twilio webhook — returns TwiML that upgrades the call to a media stream."""
-    response = VoiceResponse()
-    connect = Connect()
-    connect.stream(url=f"wss://{os.getenv('PUBLIC_URL')}/media-stream")
-    response.append(connect)
-    return HTMLResponse(content=str(response), media_type="text/xml")
+    """Answer webhook — returns the XML that upgrades the call to /media-stream."""
+    body, media_type = answer_xml(f"wss://{os.getenv('PUBLIC_URL')}/media-stream")
+    return HTMLResponse(content=body, media_type=media_type)
 
 
 @app.websocket("/media-stream")
 async def media_stream(websocket: WebSocket):
-    """Receives Twilio audio frames and hands off to the Pipecat pipeline."""
+    """Audio WebSocket. The provider's handshake is parsed inside build_transport."""
     await websocket.accept()
-
-    # Consume Twilio 'connected' and 'start' events to get stream and call SIDs
-    stream_sid = ""
-    call_sid = ""
-    async for raw in websocket.iter_text():
-        msg = json.loads(raw)
-        if msg.get("event") == "start":
-            stream_sid = msg["start"]["streamSid"]
-            call_sid = msg["start"]["callSid"]
-            break
-
-    if not stream_sid:
-        return  # malformed handshake — nothing to run
-
-    await run_bot(websocket, stream_sid, call_sid)
+    await run_bot(websocket)
 
 
 if __name__ == "__main__":

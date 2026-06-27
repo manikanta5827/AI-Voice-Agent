@@ -41,6 +41,7 @@ openai==2.43.0
 packaging==26.2
 pillow==12.2.0
 pipecat-ai==1.4.0
+pipecat-vobiz==0.0.3
 platformdirs==4.10.0
 propcache==0.5.2
 protobuf==6.33.6
