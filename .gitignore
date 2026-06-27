@@ -26,3 +26,5 @@ logs/
 .serena/
 .cursor/
 *.txt
+
+.venv-spleeter/

@@ -13,7 +13,7 @@ AGENT_NAME = "priya"
 
 # First line the caller hears (pre-rendered to audio; see services/welcome.py).
 WELCOME_MSG = (
-    f"నమస్కారం, accounts team నుంచి {AGENT_NAME} మాట్లాడుతున్నా. "
+    f"Hello andi నమస్కారం,nenu accounts team నుంచి {AGENT_NAME} మాట్లాడుతున్నాnu. "
     "మీ యాభై వేల రూపాయల invoice ముప్పై రోజులు overdue sir. ఎప్పుడు కడతారు?"
 )
 

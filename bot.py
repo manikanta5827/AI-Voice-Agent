@@ -52,6 +52,7 @@ from services.stt import create_stt
 from services.telephony import build_transport, provider
 from services.tts import create_tts
 from services.welcome import get_welcome_audio
+from services.noise_mixer import BackgroundNoiseMixer
 from business import WELCOME_MSG
 
 # English + Telugu phrases that signal the caller wants to end
@@ -397,6 +398,8 @@ async def run_bot(websocket):
         (LLMTextFrame,): "tts_send",       # first text handed to Cartesia
     }) if debug_latency else None
 
+    noise_mixer = BackgroundNoiseMixer()
+
     welcome_tap = WelcomeLatencyTap()
 
     stages = [
@@ -414,6 +417,7 @@ async def run_bot(websocket):
         marker_stripper,       # fix Telugu<->Latin script spacing before TTS
         tap_pre_tts,           # marks tts_send (DEBUG_TTFB only)
         tts,
+        noise_mixer,           # mixes call-center ambient noise into TTS output
         welcome_tap,           # measures latency to first audio frame
         tail_padder,           # trailing silence so Twilio doesn't clip the last word
         ttfb_logger,           # prints per-service TTFB each turn (DEBUG_TTFB only)
