@@ -78,6 +78,15 @@ async def _warm_tts():
     await _warm_ws(create_tts)
 
 
+async def _warm_welcome():
+    """Load + pad the cached welcome audio into the in-memory cache so the first
+    call's on_client_connected returns it instantly (no disk read, no Cartesia gen)."""
+    from bot import WELCOME_MSG
+    from services.welcome import get_welcome_audio
+
+    await get_welcome_audio(WELCOME_MSG)
+
+
 async def warmup_all(timeout: float = 8.0):
     """Warm LLM + STT + TTS concurrently. Each leg is best-effort: a failure is
     logged and never propagates, so a flaky provider can't block server boot."""
@@ -97,6 +106,7 @@ async def warmup_all(timeout: float = 8.0):
         guarded(_warm_llm(), "llm"),
         guarded(_warm_stt(), "stt"),
         guarded(_warm_tts(), "tts"),
+        guarded(_warm_welcome(), "welcome"),
     )
 
 

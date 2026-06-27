@@ -47,7 +47,7 @@ from db import end_call, insert_call, insert_message
 logger.disable("pipecat.services.openai.base_llm")
 logger.disable("pipecat.services.google.llm")
 logger.disable("pipecat.services.anthropic.llm")
-from services.llm import SYSTEM_PROMPT, create_active_llm
+from services.llm import create_active_llm, get_system_prompt
 from services.stt import create_stt
 from services.telephony import build_transport, provider
 from services.tts import create_tts
@@ -334,7 +334,7 @@ async def run_bot(websocket):
     llm = create_active_llm()
     tts = create_tts()
 
-    context = LLMContext(messages=[{"role": "system", "content": SYSTEM_PROMPT}])
+    context = LLMContext(messages=[{"role": "system", "content": get_system_prompt()}])
     # Silence (secs) after speech before turn-end fires. Lower = snappier but risks
     # cutting users mid-pause. Tune via env while latency-testing; 0.4 is the safe default.
     turn_silence = float(os.getenv("TURN_SILENCE_SECS", "0.3"))
