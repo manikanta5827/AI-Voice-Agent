@@ -52,7 +52,7 @@ BASE_PROMPT = (
 # ---------------------------------------------------------------------------
 from datetime import date
 
-from business import BUSINESS_PROMPT
+from services.business import BUSINESS_PROMPT
 
 def get_system_prompt() -> str:
     today = date.today().strftime("%B %d, %Y")

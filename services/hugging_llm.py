@@ -13,7 +13,7 @@ from pipecat.processors.frame_processor import FrameDirection
 from pipecat.services.llm_service import LLMService
 from pipecat.services.settings import LLMSettings
 
-from business import AGENT_NAME
+from services.business import AGENT_NAME
 
 class HuggingFaceLLMService(LLMService):
     def __init__(self, api_key: str, model_id: str, **kwargs):

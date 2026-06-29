@@ -43,7 +43,7 @@ from pipecat.turns.user_stop.speech_timeout_user_turn_stop_strategy import (
 )
 from pipecat.turns.user_turn_strategies import UserTurnStrategies
 
-from db import end_call, insert_call, insert_message
+from services.db import end_call, insert_call, insert_message
 
 # Suppress verbose system prompt dump. Errors still surface via exception propagation.
 logger.disable("pipecat.services.openai.base_llm")
@@ -55,7 +55,7 @@ from services.telephony import build_transport, provider
 from services.tts import create_tts
 from services.welcome import get_welcome_audio
 from services.noise_mixer import BackgroundNoiseMixer
-from business import WELCOME_MSG
+from services.business import WELCOME_MSG
 
 
 

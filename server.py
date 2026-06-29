@@ -9,7 +9,7 @@ from fastapi import FastAPI, WebSocket
 from fastapi.responses import HTMLResponse
 from loguru import logger
 
-from bot import run_bot
+from services.bot import run_bot
 from services.telephony import answer_xml, place_call, provider
 from services.warmup import warmup_all
 
